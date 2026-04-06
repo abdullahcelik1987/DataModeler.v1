@@ -1,0 +1,142 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: datamodeler
+  labels:
+    app: datamodeler
+    environment: production
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: datamodeler-config
+  namespace: datamodeler
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  NODE_ENV: "production"
+  LOG_LEVEL: "Information"
+  DOTNET_TIERED_COMPILATION: "1"
+  DOTNET_TIERED_COMPILATION_QUICK_JIT: "1"
+  DOTNET_ENABLE_DIAGNOSTICS: "0"
+  TZ: "UTC"
+---
+# Backend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: datamodeler
+  labels:
+    app: datamodeler
+    component: backend
+spec:
+  type: ClusterIP
+  selector:
+    app: datamodeler
+    component: backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+---
+# Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: datamodeler
+  labels:
+    app: datamodeler
+    component: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: datamodeler
+    component: frontend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+---
+# PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: datamodeler
+  labels:
+    app: datamodeler
+    component: postgres
+spec:
+  type: ClusterIP
+  clusterIP: None  # Headless service for StatefulSet
+  selector:
+    app: datamodeler
+    component: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: datamodeler
+  labels:
+    app: datamodeler
+    component: redis
+spec:
+  type: ClusterIP
+  selector:
+    app: datamodeler
+    component: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      protocol: TCP
+---
+# Ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: datamodeler-ingress
+  namespace: datamodeler
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - datamodeler.app
+        - api.datamodeler.app
+      secretName: datamodeler-tls
+  rules:
+    - host: datamodeler.app
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 3000
+    - host: api.datamodeler.app
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8080

@@ -1,0 +1,165 @@
+# Development version of docker-compose with more debug features
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: datamodeler-postgres-dev
+    hostname: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-datamodeler}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+      - ./backend/Database/migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - datamodeler-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-datamodeler}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: datamodeler-redis-dev
+    hostname: redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data_dev:/data
+    networks:
+      - datamodeler-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # Backend API (.NET 8)
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: datamodeler-backend-dev
+    hostname: backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
+      ConnectionStrings__DefaultConnection: >
+        Server=postgres;
+        Port=5432;
+        Database=${DB_NAME:-datamodeler};
+        User Id=${DB_USER:-postgres};
+        Password=${DB_PASSWORD:-postgres};
+        SSL Mode=disable;
+      Redis__Host: redis
+      Redis__Port: 6379
+      Redis__Password: ""
+      Redis__Database: 0
+      JWT__Secret: DevSecretKeyForDevelopmentOnlyChangeInProduction
+      JWT__Issuer: DataModeler
+      JWT__Audience: DataModelerApp
+      Logging__LogLevel__Default: Debug
+      Logging__LogLevel__Microsoft: Information
+      CORS__AllowedOrigins: http://localhost:3000,http://frontend:3000
+      TZ: UTC
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend:/app/backend:delegated
+      - backend_cache:/app/.dotnet
+    networks:
+      - datamodeler-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    stdin_open: true
+    tty: true
+
+  # Frontend (Next.js)
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8080
+    container_name: datamodeler-frontend-dev
+    hostname: frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+      NEXT_PUBLIC_APP_NAME: DataModeler
+      NEXT_PUBLIC_ENVIRONMENT: Development
+      TZ: UTC
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app:delegated
+      - /app/node_modules
+    networks:
+      - datamodeler-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    stdin_open: true
+    tty: true
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: datamodeler-pgadmin-dev
+    hostname: pgadmin
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@datamodeler.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data_dev:/var/lib/pgadmin
+    networks:
+      - datamodeler-network
+
+volumes:
+  postgres_data_dev:
+    driver: local
+  redis_data_dev:
+    driver: local
+  pgadmin_data_dev:
+    driver: local
+  backend_cache:
+    driver: local
+
+networks:
+  datamodeler-network:
+    driver: bridge

@@ -1,0 +1,17 @@
+# Dockerfile for .NET Backend
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS publish
+WORKDIR /src
+COPY ["DataModeler.API.csproj", "."]
+RUN dotnet restore "DataModeler.API.csproj"
+COPY . .
+RUN dotnet publish "DataModeler.API.csproj" -c Release -o /app/publish
+
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+COPY --from=publish /app/publish .
+
+EXPOSE 5000
+ENV ASPNETCORE_URLS=http://+:5000
+ENV ASPNETCORE_ENVIRONMENT=Production
+
+ENTRYPOINT ["dotnet", "DataModeler.API.dll"]

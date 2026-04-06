@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-slate-50 text-slate-900;
+}
+
+code {
+  @apply bg-slate-100 px-2 py-1 rounded text-sm font-mono;
+}
