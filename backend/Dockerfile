@@ -44,6 +44,7 @@ ARG VERSION=1.0.0
 RUN apk add --no-cache \
     curl \
     ca-certificates \
+    icu-libs \
     tini
 
 # Create non-root user for security
@@ -59,6 +60,7 @@ COPY --chown=appuser:appgroup . .
 ENV ASPNETCORE_ENVIRONMENT=Production \
     ASPNETCORE_URLS=http://+:8080 \
     DOTNET_EnableDiagnostics=0 \
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
     DOTNET_TieredCompilation=1 \
     DOTNET_TieredCompilationQuickJit=1 \
     COMPlus_EnableDiagnostics=0

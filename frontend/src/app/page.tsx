@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { Activity, Database, GitBranch, ShieldCheck } from 'lucide-react';
 
 export default function Home() {
   const [apiHealth, setApiHealth] = useState<'unknown' | 'healthy' | 'unhealthy'>('unknown');
@@ -20,100 +21,86 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
-      <div className="max-w-6xl mx-auto px-4 py-16">
-        <div className="text-center mb-12">
-          <h1 className="text-5xl font-bold text-gray-900 mb-4">
-            DataModeler
-          </h1>
-          <p className="text-xl text-gray-600 mb-8">
-            Text-based data model editing with DBML format
-          </p>
+    <div className="dm-page">
+      <div className="dm-shell space-y-8">
+        <section className="dm-surface p-8 md:p-10">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="max-w-2xl">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-blue-700">Data Model Workspace</p>
+              <h1 className="dm-title mt-3">DataModeler</h1>
+              <p className="dm-subtitle mt-3">
+                Text-first DBML editing, real-time collaboration, and schema governance in a single control panel.
+              </p>
+            </div>
 
-          {/* API Health Status */}
-          <div className="mb-8 inline-block">
-            <div className="px-4 py-3 rounded-lg bg-white shadow">
-              <div className="flex items-center gap-2">
-                <div
-                  className={`w-3 h-3 rounded-full ${
+            <div className="dm-panel min-w-[220px] px-5 py-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">System Status</p>
+              <div className="mt-2 flex items-center gap-2">
+                <span
+                  className={`h-2.5 w-2.5 rounded-full ${
                     apiHealth === 'healthy'
-                      ? 'bg-green-500'
+                      ? 'bg-emerald-500'
                       : apiHealth === 'unhealthy'
-                      ? 'bg-red-500'
-                      : 'bg-gray-400'
+                      ? 'bg-rose-500'
+                      : 'bg-slate-400'
                   }`}
                 />
-                <span className="text-sm font-medium">
+                <span className="text-sm font-semibold text-slate-700">
                   {apiHealth === 'healthy'
                     ? 'API Connected'
                     : apiHealth === 'unhealthy'
                     ? 'API Unavailable'
-                    : 'Checking...'}
+                    : 'Checking'}
                 </span>
               </div>
             </div>
           </div>
-        </div>
 
-        <div className="grid md:grid-cols-3 gap-8 mb-12">
-          {/* Feature Cards */}
-          <div className="bg-white rounded-lg shadow-lg p-6">
-            <div className="text-3xl mb-3">📝</div>
-            <h3 className="text-lg font-semibold mb-2">Text Editor</h3>
-            <p className="text-gray-600">
-              Edit DBML directly with syntax highlighting and validation
-            </p>
+          <div className="mt-7 flex flex-wrap gap-3">
+            <Link href="/login" className="dm-btn-primary min-w-[160px]">
+              Open Workspace
+            </Link>
           </div>
+        </section>
 
-          <div className="bg-white rounded-lg shadow-lg p-6">
-            <div className="text-3xl mb-3">📊</div>
-            <h3 className="text-lg font-semibold mb-2">Visual Designer</h3>
-            <p className="text-gray-600">
-              Interactive ER diagram with bidirectional sync to code
-            </p>
-          </div>
+        <section className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+          {[
+            {
+              icon: Database,
+              title: 'DBML Editor',
+              text: 'Write and validate schemas with syntax-focused editing and instant feedback.'
+            },
+            {
+              icon: Activity,
+              title: 'Live Diagram',
+              text: 'Visual ERD canvas synchronized with DBML for rapid architecture exploration.'
+            },
+            {
+              icon: GitBranch,
+              title: 'Version Flow',
+              text: 'Track model evolution and prepare migration workflows across environments.'
+            },
+            {
+              icon: ShieldCheck,
+              title: 'Access Control',
+              text: 'Role-based access and auditability for enterprise-grade collaboration.'
+            },
+          ].map((feature) => (
+            <article key={feature.title} className="dm-panel p-5">
+              <feature.icon className="h-6 w-6 text-blue-700" strokeWidth={2.2} />
+              <h2 className="mt-4 text-lg font-bold text-slate-900">{feature.title}</h2>
+              <p className="mt-2 text-sm text-slate-600">{feature.text}</p>
+            </article>
+          ))}
+        </section>
 
-          <div className="bg-white rounded-lg shadow-lg p-6">
-            <div className="text-3xl mb-3">👥</div>
-            <h3 className="text-lg font-semibold mb-2">Collaboration</h3>
-            <p className="text-gray-600">
-              Real-time editing with automatic conflict resolution
-            </p>
-          </div>
-        </div>
-
-        {/* Action Buttons */}
-        <div className="flex gap-4 justify-center">
-          <Link
-            href="/login"
-            className="px-8 py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition"
-          >
-            Login
-          </Link>
-        </div>
-
-        {/* Info Section */}
-        <div className="mt-16 bg-white rounded-lg shadow p-8">
-          <h2 className="text-2xl font-bold mb-4">Welcome to DataModeler v0.1.0</h2>
-          <div className="grid md:grid-cols-2 gap-8 text-gray-700">
-            <div>
-              <h3 className="font-semibold mb-2">About DBML</h3>
-              <p className="text-sm">
-                DBML is a simple, readable DSL for defining database structure. 
-                It lets you define tables, columns, relationships, and more in a 
-                simple, human-friendly syntax.
-              </p>
-            </div>
-            <div>
-              <h3 className="font-semibold mb-2">Getting Started</h3>
-              <p className="text-sm">
-                Login with your Active Directory account to start creating and 
-                managing your data models. Create new models, invite collaborators, 
-                and generate SQL migrations.
-              </p>
-            </div>
-          </div>
-        </div>
+        <section className="dm-panel p-6 md:p-8">
+          <h2 className="text-xl font-bold text-slate-900">Built for governed data modeling</h2>
+          <p className="mt-2 max-w-3xl text-sm text-slate-600">
+            Keep your modeling workflow in DBML without losing visual context, collaboration visibility, or enterprise controls.
+            Functionality remains identical while the interface is tuned for faster scanning and cleaner decision points.
+          </p>
+        </section>
       </div>
     </div>
   );

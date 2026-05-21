@@ -46,8 +46,12 @@ public class UserDto
 {
     public Guid Id { get; set; }
     public string Email { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string OrganizationUnit { get; set; } = string.Empty;
     public bool IsSuperAdmin { get; set; }
     public bool IsActive { get; set; }
+    public string AuthSource { get; set; } = "local";
+    public DateTime? LastLogin { get; set; }
     public DateTime CreatedAt { get; set; }
 }
 

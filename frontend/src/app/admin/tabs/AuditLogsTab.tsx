@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080').replace(/\/$/, '').replace(/\/api$/, '');
 
 interface AuditLog {
   id: string;
@@ -23,8 +23,8 @@ export function AuditLogsTab() {
   const [fromDate, setFromDate] = useState<string>('');
   const [toDate, setToDate] = useState<string>('');
 
-  const panelClass = 'bg-slate-50 border border-slate-200 rounded-xl p-5';
-  const inputClass = 'w-full px-3 py-2.5 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400';
+  const panelClass = 'dm-panel p-5';
+  const inputClass = 'dm-input';
 
   useEffect(() => {
     fetchAuditLogs();
@@ -32,7 +32,7 @@ export function AuditLogsTab() {
 
   const fetchAuditLogs = async () => {
     try {
-      const token = localStorage.getItem('auth-token');
+      const token = localStorage.getItem('token');
       const params = new URLSearchParams({
         page: page.toString(),
         pageSize: pageSize.toString()
@@ -41,9 +41,13 @@ export function AuditLogsTab() {
       if (fromDate) params.append('fromDate', fromDate);
       if (toDate) params.append('toDate', toDate);
 
-      const response = await fetch(`/api/admin/audit-logs?${params}`, {
+      const response = await fetch(`${API_URL}/api/admin/audit-logs?${params}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
+
+      if (!response.ok) {
+        throw new Error(`Failed to load audit logs (${response.status})`);
+      }
 
       const data = await response.json();
       setLogs(data.logs);
@@ -57,7 +61,7 @@ export function AuditLogsTab() {
 
   const handleExport = async () => {
     try {
-      const token = localStorage.getItem('auth-token');
+      const token = localStorage.getItem('token');
       const response = await fetch(`${API_URL}/api/admin/audit-logs/export`, {
         method: 'POST',
         headers: {
@@ -146,7 +150,7 @@ export function AuditLogsTab() {
           <div className="flex items-end">
             <button
               onClick={handleExport}
-              className="w-full px-4 py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-500 transition-colors"
+              className="dm-btn-primary w-full"
             >
               Export CSV
             </button>
@@ -155,7 +159,7 @@ export function AuditLogsTab() {
       </div>
 
       {/* Logs Table */}
-      <div className="bg-slate-50 border border-slate-200 rounded-xl overflow-x-auto">
+      <div className="dm-panel overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-100/80">
@@ -202,7 +206,7 @@ export function AuditLogsTab() {
           <button
             onClick={() => setPage(Math.max(1, page - 1))}
             disabled={page === 1}
-            className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 disabled:bg-slate-100 disabled:text-slate-400 hover:bg-slate-100 transition-colors"
+            className="dm-btn-secondary h-10"
           >
             Previous
           </button>
@@ -227,7 +231,7 @@ export function AuditLogsTab() {
           <button
             onClick={() => setPage(Math.min(totalPages, page + 1))}
             disabled={page === totalPages}
-            className="px-4 py-2 border border-slate-300 rounded-lg text-slate-700 disabled:bg-slate-100 disabled:text-slate-400 hover:bg-slate-100 transition-colors"
+            className="dm-btn-secondary h-10"
           >
             Next
           </button>

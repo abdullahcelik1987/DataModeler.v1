@@ -82,6 +82,7 @@ public class AuthController : ControllerBase
                 {
                     Id = user.Id,
                     Email = user.Email,
+                    Username = user.Email.Contains('@') ? user.Email.Split('@')[0] : user.Email,
                     IsSuperAdmin = user.IsSuperAdmin,
                     IsActive = user.IsActive,
                     CreatedAt = user.CreatedAt
@@ -165,6 +166,7 @@ public class AuthController : ControllerBase
                 {
                     Id = user.Id,
                     Email = user.Email,
+                    Username = user.Email.Contains('@') ? user.Email.Split('@')[0] : user.Email,
                     IsSuperAdmin = user.IsSuperAdmin,
                     IsActive = user.IsActive,
                     CreatedAt = user.CreatedAt

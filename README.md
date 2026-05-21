@@ -75,22 +75,22 @@ DataModeler.v1/
 
 2. **Start Docker Compose**
    ```bash
-   docker-compose -f docker/docker-compose.yml up -d
+   docker compose -f docker-compose.dev.yml up -d --build
    ```
 
 3. **Wait for services to start**
    - PostgreSQL: `localhost:5432`
-   - Backend API: `http://localhost:5000`
+   - Backend API: `http://localhost:8080`
    - Frontend: `http://localhost:3000`
 
 4. **Verify health**
    ```bash
-   curl http://localhost:5000/health
+   curl http://localhost:8080/health
    ```
 
 5. **Access Application**
    - Frontend: http://localhost:3000
-   - API Swagger Docs: http://localhost:5000/swagger
+   - API Swagger Docs: http://localhost:8080/swagger
 
 ---
 
@@ -168,6 +168,13 @@ NEXT_PUBLIC_API_URL=http://localhost:5000
 - API client with axios
 - Ready for phase 4 components
 
+### Frontend Dev Compose Behavior
+- Development runs with `docker compose -f docker-compose.dev.yml`.
+- The frontend service runs in real Next.js dev mode with `npm run dev`, not `npm start`.
+- Source code is bind-mounted from `./frontend`, but `node_modules` and `.next` are isolated in Docker volumes.
+- This prevents stale host `frontend/.next` output from overriding the running UI after code changes.
+- If frontend changes do not appear, first verify you are using `docker-compose.dev.yml`, not an older compose file.
+
 ### Database
 - PostgreSQL 15 Alpine
 - All tables created on first run via schema.sql
@@ -186,7 +193,23 @@ PostgreSQL data is stored in Docker volume `postgres_data` and persists across c
 
 ### Docker containers won't start
 ```bash
-docker-compose -f docker/docker-compose.yml logs -f
+docker compose -f docker-compose.dev.yml logs -f
+```
+
+### Database backup and restore (PowerShell)
+Create backup:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\db-backup.ps1 -OutputDir .\backups -KeepLast 30
+```
+
+Restore backup:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\db-restore.ps1 -BackupFile .\backups\datamodeler-YYYYMMDD-HHMMSS.dump
+```
+
+Destructive restore (drops objects before restore):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\db-restore.ps1 -BackupFile .\backups\datamodeler-YYYYMMDD-HHMMSS.dump -DropAndRecreate -Force
 ```
 
 ### PostgreSQL connection failed
@@ -196,14 +219,14 @@ docker ps
 ```
 
 ### Frontend API errors
-Check backend health: `curl http://localhost:5000/health`
+Check backend health: `curl http://localhost:8080/health`
 
 ---
 
 ## Next Steps
 
 1. Verify Docker containers are running: `docker ps`
-2. Check API health: http://localhost:5000/health
+2. Check API health: http://localhost:8080/health
 3. Access frontend: http://localhost:3000
 4. Review `PROJECT_VERSION_CONFIG.md` for roadmap
 5. Proceed to Phase 2 (Authentication) when ready

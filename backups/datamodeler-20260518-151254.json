@@ -1,0 +1,9 @@
+﻿{
+    "createdAtUtc":  "2026-05-18T12:12:54.6713179Z",
+    "container":  "datamodeler-postgres",
+    "database":  "datamodeler",
+    "user":  "postgres",
+    "format":  "pg_dump custom",
+    "backupFile":  "datamodeler-20260518-151254.dump",
+    "fileSizeBytes":  76216
+}

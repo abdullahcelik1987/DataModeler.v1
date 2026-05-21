@@ -1,27 +1,33 @@
 'use client';
 
-import { ChangeEvent, useMemo, useState } from 'react';
+import { ChangeEvent, useEffect, useMemo, useState } from 'react';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import { ModelListDto } from '@/src/types/dbml';
 import {
   DbmlProjectMetadata,
+  ProjectMetadataFieldDefinition,
   ProjectEnvironment,
   buildProjectBlock,
   createDefaultProjectMetadata,
   getTodayIsoDate,
   parseProjectMetadata,
+  sanitizeMetadataByDefinitions,
+  setMetadataFieldValue,
+  toProjectMetadataPayload,
   upsertProjectBlock,
 } from '@/src/lib/dbmlProjectMetadata';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080').replace(/\/$/, '').replace(/\/api$/, '');
 
 type ImportExportModalProps = {
   isOpen: boolean;
+  defaultTab?: 'import' | 'export';
   onClose: () => void;
   models: ModelListDto[];
   canImport: boolean;
   currentUserEmail?: string;
+  ownerGroups?: string[];
   onImported: () => Promise<void>;
   onError: (message: string) => void;
 };
@@ -208,14 +214,16 @@ async function exportDiagramAsImageOrPdf(format: 'png' | 'jpeg' | 'pdf', fileNam
 
 export function ImportExportModal({
   isOpen,
+  defaultTab = 'import',
   onClose,
   models,
   canImport,
   currentUserEmail,
+  ownerGroups = [],
   onImported,
   onError,
 }: ImportExportModalProps) {
-  const [activeTab, setActiveTab] = useState<'import' | 'export'>('import');
+  const [activeTab, setActiveTab] = useState<'import' | 'export'>(defaultTab);
   const [importing, setImporting] = useState(false);
   const [importedFileName, setImportedFileName] = useState('');
   const [importDbml, setImportDbml] = useState('');
@@ -224,16 +232,79 @@ export function ImportExportModal({
   const [importMetadata, setImportMetadata] = useState<DbmlProjectMetadata>(
     createDefaultProjectMetadata({ environment: 'Development', owner: currentUserEmail || '' })
   );
+  const [metadataFields, setMetadataFields] = useState<ProjectMetadataFieldDefinition[]>([]);
   const [selectedExportModelId, setSelectedExportModelId] = useState('');
   const [selectedExportFormat, setSelectedExportFormat] = useState<ExportFormat>('dbml');
   const [exporting, setExporting] = useState(false);
 
   const sortedModels = useMemo(() => [...models].sort((a, b) => a.name.localeCompare(b.name)), [models]);
+  const modalTitle = defaultTab === 'import' ? 'Import Model' : 'Export Model';
+  const modalSubtitle = defaultTab === 'import'
+    ? 'Import DBML with metadata into a new model.'
+    : 'Export existing models into DBML, SQL, image, PDF, or XMI formats.';
+
+  useEffect(() => {
+    if (isOpen) {
+      setActiveTab(defaultTab);
+    }
+  }, [defaultTab, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    setImportMetadata((current) => {
+      const ownerGroup = (current.ownerGroup || '').trim();
+      if (ownerGroup.length > 0 && ownerGroups.some((group) => group.localeCompare(ownerGroup, undefined, { sensitivity: 'base' }) === 0)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        ownerGroup: ownerGroups[0] || '',
+      };
+    });
+  }, [isOpen, ownerGroups]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const fetchMetadataFields = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`${API_URL}/api/models/project-metadata/fields`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to load metadata fields');
+        }
+
+        const payload = (await response.json()) as ProjectMetadataFieldDefinition[];
+        const active = (payload || []).filter(
+          (field) => field.isActive && field.fieldKey.trim().toLowerCase() !== 'business_domain'
+        );
+        setMetadataFields(active);
+        setImportMetadata((current) => sanitizeMetadataByDefinitions(current, active));
+      } catch {
+        setMetadataFields([]);
+      }
+    };
+
+    void fetchMetadataFields();
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   const handleImportMetadataFieldChange = (field: keyof DbmlProjectMetadata, value: string) => {
     setImportMetadata((current) => ({ ...current, [field]: value }));
+  };
+
+  const handleImportCustomFieldChange = (fieldKey: string, value: string) => {
+    setImportMetadata((current) => setMetadataFieldValue(current, fieldKey, value));
   };
 
   const handleDbmlFilePicked = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -251,6 +322,9 @@ export function ImportExportModal({
       setImportMetadata(createDefaultProjectMetadata({
         ...parsed.metadata,
         owner: parsed.metadata.owner || currentUserEmail || '',
+        ownerGroup: ownerGroups.some((group) => group.localeCompare(parsed.metadata.ownerGroup || '', undefined, { sensitivity: 'base' }) === 0)
+          ? (parsed.metadata.ownerGroup || '')
+          : (ownerGroups[0] || ''),
         lastUpdate: getTodayIsoDate(),
       }));
     } catch {
@@ -274,16 +348,41 @@ export function ImportExportModal({
       return;
     }
 
+    if (ownerGroups.length === 0) {
+      onError('No Organization Unit found. Import LDAP users first and then select Owner Group.');
+      return;
+    }
+
+    const normalizedOwnerGroup = (importMetadata.ownerGroup || '').trim();
+    if (!normalizedOwnerGroup) {
+      onError('Owner Group is required. Please select an Organization Unit.');
+      return;
+    }
+
+    if (!ownerGroups.some((group) => group.localeCompare(normalizedOwnerGroup, undefined, { sensitivity: 'base' }) === 0)) {
+      onError('Owner Group must be selected from Organization Unit list.');
+      return;
+    }
+
     setImporting(true);
     try {
-      const normalizedMetadata: DbmlProjectMetadata = {
+      const normalizedMetadata: DbmlProjectMetadata = sanitizeMetadataByDefinitions({
         ...importMetadata,
         databaseType: importMetadata.databaseType || 'PostgreSQL',
         description: importDescription.trim(),
         owner: importMetadata.owner || currentUserEmail || '',
+        ownerGroup: normalizedOwnerGroup,
         version: importMetadata.version || '1.0.0',
         lastUpdate: getTodayIsoDate(),
-      };
+      }, metadataFields);
+
+      const missingCustomRequired = metadataFields
+        .filter((field) => field.isActive && field.isRequired && !field.isSystem)
+        .find((field) => !(normalizedMetadata.customFields[field.fieldKey] || '').trim());
+      if (missingCustomRequired) {
+        onError(`${missingCustomRequired.displayName} is required.`);
+        return;
+      }
 
       const withProjectMetadata = upsertProjectBlock(importDbml, importModelName.trim(), normalizedMetadata);
       const finalDbml = withProjectMetadata.includes('Project "')
@@ -302,6 +401,7 @@ export function ImportExportModal({
           description: importDescription.trim(),
           databaseDialect: normalizedMetadata.databaseType,
           initialDbml: finalDbml,
+          projectMetadata: toProjectMetadataPayload(normalizedMetadata),
         }),
       });
 
@@ -363,29 +463,14 @@ export function ImportExportModal({
       <div className="w-full max-w-4xl rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
         <div className="mb-4 flex items-center justify-between gap-4">
           <div>
-            <h2 className="text-2xl font-bold text-slate-900">Import / Export</h2>
-            <p className="text-sm text-slate-500">Import DBML with metadata or export models into multiple formats.</p>
+            <h2 className="text-2xl font-bold text-slate-900">{modalTitle}</h2>
+            <p className="text-sm text-slate-500">{modalSubtitle}</p>
           </div>
           <button
             onClick={onClose}
             className="inline-flex h-10 items-center rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-100"
           >
             Close
-          </button>
-        </div>
-
-        <div className="mb-5 inline-flex rounded-lg border border-slate-300 p-1 bg-slate-100">
-          <button
-            onClick={() => setActiveTab('import')}
-            className={`rounded-md px-4 py-2 text-sm font-medium ${activeTab === 'import' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}
-          >
-            Import
-          </button>
-          <button
-            onClick={() => setActiveTab('export')}
-            className={`rounded-md px-4 py-2 text-sm font-medium ${activeTab === 'export' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}
-          >
-            Export
           </button>
         </div>
 
@@ -455,13 +540,30 @@ export function ImportExportModal({
               </div>
 
               <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">Owner</label>
+                <label className="mb-1 block text-sm font-medium text-slate-700">Owner User</label>
                 <input
                   type="text"
                   value={importMetadata.owner}
                   onChange={(e) => handleImportMetadataFieldChange('owner', e.target.value)}
                   className="h-11 w-full rounded-xl border border-slate-300 px-3 text-sm"
                 />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-slate-700">Owner Group*</label>
+                <select
+                  value={importMetadata.ownerGroup || ''}
+                  onChange={(e) => handleImportMetadataFieldChange('ownerGroup', e.target.value)}
+                  className="h-11 w-full rounded-xl border border-slate-300 px-3 text-sm"
+                >
+                  <option value="">Select Organization Unit</option>
+                  {ownerGroups.map((group) => (
+                    <option key={group} value={group}>{group}</option>
+                  ))}
+                </select>
+                {ownerGroups.length === 0 && (
+                  <p className="mt-1 text-xs text-amber-700">No Organization Unit found from imported LDAP users.</p>
+                )}
               </div>
 
               <div>
@@ -484,21 +586,50 @@ export function ImportExportModal({
                 />
               </div>
 
-              <div>
-                <label className="mb-1 block text-sm font-medium text-slate-700">Business Domain</label>
-                <input
-                  type="text"
-                  value={importMetadata.businessDomain}
-                  onChange={(e) => handleImportMetadataFieldChange('businessDomain', e.target.value)}
-                  className="h-11 w-full rounded-xl border border-slate-300 px-3 text-sm"
-                />
-              </div>
+              {metadataFields
+                .filter((field) => field.isActive && !field.isSystem)
+                .map((field) => {
+                  const value = importMetadata.customFields[field.fieldKey] || '';
+                  return (
+                    <div key={field.fieldKey} className="sm:col-span-2">
+                      <label className="mb-1 block text-sm font-medium text-slate-700">
+                        {field.displayName}{field.isRequired ? '*' : ''}
+                      </label>
+                      {field.fieldType === 'textarea' ? (
+                        <textarea
+                          value={value}
+                          onChange={(e) => handleImportCustomFieldChange(field.fieldKey, e.target.value)}
+                          rows={2}
+                          className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                        />
+                      ) : field.fieldType === 'select' ? (
+                        <select
+                          value={value}
+                          onChange={(e) => handleImportCustomFieldChange(field.fieldKey, e.target.value)}
+                          className="h-11 w-full rounded-xl border border-slate-300 px-3 text-sm"
+                        >
+                          <option value="">Select...</option>
+                          {(field.options || []).map((option) => (
+                            <option key={option} value={option}>{option}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          value={value}
+                          onChange={(e) => handleImportCustomFieldChange(field.fieldKey, e.target.value)}
+                          className="h-11 w-full rounded-xl border border-slate-300 px-3 text-sm"
+                        />
+                      )}
+                    </div>
+                  );
+                })}
             </div>
 
             <div className="flex justify-end">
               <button
                 onClick={handleImportSubmit}
-                disabled={importing || !canImport}
+                disabled={importing || !canImport || ownerGroups.length === 0 || !(importMetadata.ownerGroup || '').trim()}
                 className="inline-flex h-11 items-center rounded-xl bg-blue-600 px-5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {importing ? 'Importing...' : 'Import DBML as New Model'}

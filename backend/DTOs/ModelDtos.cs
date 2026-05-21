@@ -35,6 +35,7 @@ public class ModelDetailDto
     public string YourRole { get; set; } = "viewer";
     public Guid? ModelGroupId { get; set; }
     public string? ModelGroupName { get; set; }
+    public Dictionary<string, string> ProjectMetadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 public class CreateModelRequestDto
@@ -44,6 +45,7 @@ public class CreateModelRequestDto
     public string? DatabaseDialect { get; set; }
     public string? InitialDbml { get; set; }
     public Guid? ModelGroupId { get; set; }
+    public Dictionary<string, string>? ProjectMetadata { get; set; }
 }
 
 public class UpdateModelRequestDto
@@ -53,6 +55,7 @@ public class UpdateModelRequestDto
     public string? DatabaseDialect { get; set; }
     public string? DbmlContent { get; set; }
     public string? ChangeSummary { get; set; }
+    public Dictionary<string, string>? ProjectMetadata { get; set; }
 }
 
 public class CreateModelGroupRequestDto
@@ -151,4 +154,39 @@ public class DbmlRelationshipDto
     public string ToTable { get; set; } = string.Empty;
     public string ToColumn { get; set; } = string.Empty;
     public string RelationType { get; set; } = "one_to_many"; // one_to_one, one_to_many, many_to_many
+}
+
+// ============ Reverse Engineering DTOs ============
+
+public class ReverseEngineConnectionRequestDto
+{
+    public string DatabaseType { get; set; } = "PostgreSQL"; // PostgreSQL, SQL Server, MySQL, Oracle
+    public string Host { get; set; } = string.Empty;
+    public int Port { get; set; }
+    public string DatabaseName { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
+    public string? Schema { get; set; }
+}
+
+public class ReverseEngineGetTablesRequestDto : ReverseEngineConnectionRequestDto
+{
+}
+
+public class ReverseEngineGenerateDbmlRequestDto : ReverseEngineConnectionRequestDto
+{
+    public List<string> SelectedTables { get; set; } = new(); // table or schema.table
+}
+
+public class ReverseEngineTableDto
+{
+    public string Schema { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string Identifier { get; set; } = string.Empty; // schema.table
+}
+
+public class ReverseEngineGenerateDbmlResponseDto
+{
+    public string DbmlContent { get; set; } = string.Empty;
+    public int ImportedTableCount { get; set; }
 }

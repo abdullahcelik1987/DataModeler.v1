@@ -23,9 +23,19 @@ public class DataModelerDbContext : DbContext
     public DbSet<AuditLog> AuditLogs { get; set; }
     public DbSet<EditingSession> EditingSessions { get; set; }
     public DbSet<YjsUpdate> YjsUpdates { get; set; }
+    public DbSet<ApplicationRole> ApplicationRoles { get; set; }
+    public DbSet<UserApplicationRole> UserApplicationRoles { get; set; }
     public DbSet<AdSettings> AdSettings { get; set; }
     public DbSet<DevopsSettings> DevopsSettings { get; set; }
+    public DbSet<DevopsRepositoryMapping> DevopsRepositoryMappings { get; set; }
     public DbSet<RepositoryConnection> RepositoryConnections { get; set; }
+    public DbSet<DatabaseSystem> DatabaseSystems { get; set; }
+    public DbSet<DatabaseDataType> DatabaseDataTypes { get; set; }
+    public DbSet<ProjectMetadataFieldDefinition> ProjectMetadataFieldDefinitions { get; set; }
+    public DbSet<ChangeRequest> ChangeRequests { get; set; }
+    public DbSet<ChangeRequestDetails> ChangeRequestDetails { get; set; }
+    public DbSet<ChangeRequestApprovalLog> ChangeRequestApprovalLogs { get; set; }
+    public DbSet<WorkflowTemplate> WorkflowTemplates { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -82,6 +92,7 @@ public class DataModelerDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Name).IsRequired().HasMaxLength(255);
             entity.Property(e => e.DatabaseDialect).HasMaxLength(50).HasDefaultValue("PostgreSQL");
+            entity.Property(e => e.ProjectMetadataJson).HasColumnType("text").HasDefaultValue("{}");
             entity.HasIndex(e => e.OwnerId);
             entity.HasIndex(e => e.ModelGroupId);
             entity.HasIndex(e => new { e.CreatedAt }).IsDescending();
@@ -89,6 +100,21 @@ public class DataModelerDbContext : DbContext
             entity.HasOne(e => e.ModelGroup).WithMany(g => g.Models).HasForeignKey(e => e.ModelGroupId).OnDelete(DeleteBehavior.SetNull);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
+        });
+
+        modelBuilder.Entity<ProjectMetadataFieldDefinition>(entity =>
+        {
+            entity.ToTable("project_metadata_field_definitions");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.FieldKey).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.DisplayName).HasMaxLength(150).IsRequired();
+            entity.Property(e => e.FieldType).HasMaxLength(30).IsRequired().HasDefaultValue("text");
+            entity.Property(e => e.OptionsJson).HasColumnType("text").HasDefaultValue("[]");
+            entity.Property(e => e.IsActive).HasDefaultValue(true);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
+            entity.HasIndex(e => e.FieldKey).IsUnique();
+            entity.HasIndex(e => new { e.IsActive, e.SortOrder });
         });
 
         // Configure ModelGroup
@@ -182,6 +208,38 @@ public class DataModelerDbContext : DbContext
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
         });
 
+        // Configure ApplicationRole
+        modelBuilder.Entity<ApplicationRole>(entity =>
+        {
+            entity.ToTable("application_roles");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.DisplayName).HasMaxLength(150).IsRequired();
+            entity.Property(e => e.Description).HasMaxLength(500);
+            entity.Property(e => e.PermissionsJson).HasColumnName("permissions_json");
+            entity.HasIndex(e => e.Name).IsUnique();
+            entity.HasIndex(e => e.IsActive);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
+        });
+
+        // Configure UserApplicationRole
+        modelBuilder.Entity<UserApplicationRole>(entity =>
+        {
+            entity.ToTable("user_application_roles");
+            entity.HasKey(e => new { e.UserId, e.RoleId });
+            entity.HasIndex(e => e.RoleId);
+            entity.HasOne(e => e.User)
+                .WithMany(u => u.ApplicationRoles)
+                .HasForeignKey(e => e.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Role)
+                .WithMany(r => r.Users)
+                .HasForeignKey(e => e.RoleId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.Property(e => e.AssignedAt).HasDefaultValueSql("NOW()");
+        });
+
         // Configure AdSettings
         modelBuilder.Entity<AdSettings>(entity =>
         {
@@ -203,6 +261,24 @@ public class DataModelerDbContext : DbContext
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
         });
 
+        // Configure DevopsRepositoryMapping
+        modelBuilder.Entity<DevopsRepositoryMapping>(entity =>
+        {
+            entity.ToTable("devops_repository_mappings");
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.ModelId).IsUnique();
+            entity.Property(e => e.ProjectName).HasMaxLength(255).IsRequired();
+            entity.Property(e => e.RepositoryName).HasMaxLength(255).IsRequired();
+            entity.Property(e => e.BranchName).HasMaxLength(255).HasDefaultValue("main");
+            entity.Property(e => e.FilePath).HasMaxLength(500).IsRequired();
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
+            entity.HasOne(e => e.Model)
+                .WithMany()
+                .HasForeignKey(e => e.ModelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
         // Configure RepositoryConnection
         modelBuilder.Entity<RepositoryConnection>(entity =>
         {
@@ -215,6 +291,100 @@ public class DataModelerDbContext : DbContext
             entity.Property(e => e.DatabaseType).HasMaxLength(50);
             entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
             entity.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
+        });
+
+        // Configure DatabaseSystem
+        modelBuilder.Entity<DatabaseSystem>(entity =>
+        {
+            entity.ToTable("database_systems");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.Key).HasMaxLength(50).IsRequired();
+            entity.HasIndex(e => e.Name).IsUnique();
+            entity.HasIndex(e => e.Key).IsUnique();
+            entity.HasIndex(e => e.IsActive);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
+        });
+
+        // Configure DatabaseDataType
+        modelBuilder.Entity<DatabaseDataType>(entity =>
+        {
+            entity.ToTable("database_data_types");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.InputTemplate).HasMaxLength(500).IsRequired();
+            entity.Property(e => e.ParametersJson).HasColumnType("text").IsRequired();
+            entity.HasIndex(e => new { e.DatabaseSystemId, e.Name }).IsUnique();
+            entity.HasIndex(e => e.IsActive);
+            entity.HasOne(e => e.DatabaseSystem)
+                .WithMany(d => d.DataTypes)
+                .HasForeignKey(e => e.DatabaseSystemId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
+        });
+
+        // Configure ChangeRequest
+        modelBuilder.Entity<ChangeRequest>(entity =>
+        {
+            entity.ToTable("change_requests");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.ChangeCode).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.Title).HasMaxLength(255).IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.WorkflowStagesJson).HasColumnType("text").IsRequired();
+            entity.HasIndex(e => e.ModelId);
+            entity.HasIndex(e => e.RequesterId);
+            entity.HasIndex(e => e.Status);
+            entity.HasIndex(e => e.ChangeCode).IsUnique();
+            entity.HasIndex(e => new { e.CreatedAt }).IsDescending();
+            entity.HasOne(e => e.Model)
+                .WithMany()
+                .HasForeignKey(e => e.ModelId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Requester)
+                .WithMany(u => u.ChangeRequests)
+                .HasForeignKey(e => e.RequesterId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
+            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("NOW()");
+        });
+
+        // Configure ChangeRequestDetails
+        modelBuilder.Entity<ChangeRequestDetails>(entity =>
+        {
+            entity.ToTable("change_request_details");
+            entity.HasKey(e => e.ChangeRequestId);
+            entity.Property(e => e.OldDbmlSnapshot).HasColumnType("text").IsRequired();
+            entity.Property(e => e.NewDbmlSnapshot).HasColumnType("text").IsRequired();
+            entity.Property(e => e.GeneratedSql).HasColumnType("text").IsRequired();
+            entity.HasOne(e => e.ChangeRequest)
+                .WithOne(c => c.Details)
+                .HasForeignKey<ChangeRequestDetails>(e => e.ChangeRequestId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Configure ChangeRequestApprovalLog
+        modelBuilder.Entity<ChangeRequestApprovalLog>(entity =>
+        {
+            entity.ToTable("change_request_approval_logs");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.FromStatus).HasMaxLength(64);
+            entity.Property(e => e.ToStatus).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.Comment).HasMaxLength(2000);
+            entity.HasIndex(e => e.ChangeRequestId);
+            entity.HasIndex(e => e.ActionBy);
+            entity.HasIndex(e => new { e.CreatedAt }).IsDescending();
+            entity.HasOne(e => e.ChangeRequest)
+                .WithMany(c => c.ApprovalLogs)
+                .HasForeignKey(e => e.ChangeRequestId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Actor)
+                .WithMany(u => u.ChangeRequestApprovalLogs)
+                .HasForeignKey(e => e.ActionBy)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
         });
     }
 }

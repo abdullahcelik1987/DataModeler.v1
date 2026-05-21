@@ -101,7 +101,6 @@ export function DbmlEditor({ value, onChange, readOnly = false, height = '600px'
     const firstMatch = matches[0].range;
     editor.setSelection(firstMatch);
     editor.revealRangeInCenter(firstMatch, monaco.editor.ScrollType.Smooth);
-    editor.focus();
   }, [searchQuery, searchNonce]);
 
   return (

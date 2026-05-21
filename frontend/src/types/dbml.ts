@@ -41,7 +41,7 @@ export interface ModelListDto {
   databaseDialect: string;
   createdAt: string;
   updatedAt: string;
-  yourRole: 'viewer' | 'editor' | 'owner';
+  yourRole: 'viewer' | 'editor' | 'owner' | 'admin' | 'developer' | 'domain_architect' | 'data_architect' | 'data_steward';
   latestVersion: number;
   modelGroupId?: string | null;
   modelGroupName?: string | null;
@@ -58,9 +58,10 @@ export interface ModelDetailDto {
   latestVersion: number;
   dbmlContent: string;
   erdData: ErdDataDto;
-  yourRole: 'viewer' | 'editor' | 'owner';
+  yourRole: 'viewer' | 'editor' | 'owner' | 'admin' | 'developer' | 'domain_architect' | 'data_architect' | 'data_steward';
   modelGroupId?: string | null;
   modelGroupName?: string | null;
+  projectMetadata?: Record<string, string>;
 }
 
 export interface ModelGroupDto {
@@ -92,6 +93,7 @@ export interface CreateModelRequestDto {
   description?: string;
   databaseDialect?: string;
   initialDbml?: string;
+  projectMetadata?: Record<string, string>;
 }
 
 export interface UpdateModelRequestDto {
@@ -100,4 +102,5 @@ export interface UpdateModelRequestDto {
   databaseDialect?: string;
   dbmlContent?: string;
   changeSummary?: string;
+  projectMetadata?: Record<string, string>;
 }

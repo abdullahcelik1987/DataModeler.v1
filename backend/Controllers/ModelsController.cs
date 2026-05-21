@@ -1,4 +1,5 @@
 ﻿using System.Security.Claims;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Cors;
@@ -15,17 +16,49 @@ namespace DataModeler.API.Controllers;
 [EnableCors("AllowFrontend")]
 public class ModelsController : ControllerBase
 {
+    private static readonly Dictionary<string, int> RoleHierarchy = new(StringComparer.OrdinalIgnoreCase)
+    {
+        { "viewer", 1 },
+        { "data_steward", 1 },
+        { "editor", 2 },
+        { "developer", 2 },
+        { "domain_architect", 2 },
+        { "data_architect", 2 },
+        { "owner", 3 },
+        { "admin", 3 }
+    };
+
     private readonly DataModelerDbContext _context;
     private readonly IDbmlParserService _dbmlParser;
+    private readonly IReverseEngineeringService _reverseEngineeringService;
     private readonly ILogger<ModelsController> _logger;
+
+    private static readonly string[] ModelScopedApplicationRolesByPriority =
+    {
+        "admin",
+        "owner",
+        "data_architect",
+        "domain_architect",
+        "developer",
+        "editor",
+        "data_steward",
+        "viewer"
+    };
+
+    private static readonly string[] GlobalDefaultModelRolesByPriority =
+    {
+        "admin"
+    };
 
     public ModelsController(
         DataModelerDbContext context,
         IDbmlParserService dbmlParser,
+        IReverseEngineeringService reverseEngineeringService,
         ILogger<ModelsController> logger)
     {
         _context = context;
         _dbmlParser = dbmlParser;
+        _reverseEngineeringService = reverseEngineeringService;
         _logger = logger;
     }
 
@@ -38,24 +71,289 @@ public class ModelsController : ControllerBase
         return Guid.TryParse(userIdClaim, out var userId) ? userId : Guid.Empty;
     }
 
+    private static string ExtractOrganizationUnit(string? distinguishedName)
+    {
+        if (string.IsNullOrWhiteSpace(distinguishedName))
+        {
+            return string.Empty;
+        }
+
+        var ous = distinguishedName
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => part.Trim())
+            .Where(part => part.StartsWith("OU=", StringComparison.OrdinalIgnoreCase) && part.Length > 3)
+            .Select(part => part[3..].Trim())
+            .Where(part => !string.IsNullOrWhiteSpace(part))
+            .ToList();
+
+        return ous.Count == 0 ? string.Empty : string.Join(" / ", ous);
+    }
+
+    private static string NormalizeOuKey(string? value)
+    {
+        return (value ?? string.Empty).Trim().ToLowerInvariant();
+    }
+
+    private static string? ResolveGlobalDefaultRole(ISet<string> userApplicationRoles)
+    {
+        foreach (var roleName in GlobalDefaultModelRolesByPriority)
+        {
+            if (userApplicationRoles.Contains(roleName))
+            {
+                return roleName;
+            }
+        }
+
+        return null;
+    }
+
+    private static string NormalizeMetadataKey(string? key)
+    {
+        var input = (key ?? string.Empty).Trim().ToLowerInvariant();
+        if (input.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var chars = input.Select(ch => char.IsLetterOrDigit(ch) ? ch : '_').ToArray();
+        var compact = new string(chars);
+        while (compact.Contains("__", StringComparison.Ordinal))
+        {
+            compact = compact.Replace("__", "_", StringComparison.Ordinal);
+        }
+
+        return compact.Trim('_');
+    }
+
+    private static Dictionary<string, string> DeserializeProjectMetadata(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, string>>(json)
+                ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private static string SerializeProjectMetadata(Dictionary<string, string> metadata)
+    {
+        return JsonSerializer.Serialize(metadata ?? new Dictionary<string, string>());
+    }
+
+    private static Dictionary<string, string> NormalizeProjectMetadata(
+        IDictionary<string, string>? raw,
+        IEnumerable<ProjectMetadataFieldDefinition> activeFields,
+        string modelName,
+        string? description,
+        string? databaseDialect,
+        string ownerEmail,
+        string? ownerGroup)
+    {
+        var normalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var input = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (raw != null)
+        {
+            foreach (var pair in raw)
+            {
+                var key = NormalizeMetadataKey(pair.Key);
+                if (key.Length == 0)
+                {
+                    continue;
+                }
+
+                input[key] = pair.Value?.Trim() ?? string.Empty;
+            }
+        }
+
+        foreach (var field in activeFields)
+        {
+            var key = NormalizeMetadataKey(field.FieldKey);
+            if (key.Length == 0)
+            {
+                continue;
+            }
+
+            var value = input.TryGetValue(key, out var incoming) ? incoming : string.Empty;
+            if (string.IsNullOrWhiteSpace(value) && field.IsRequired)
+            {
+                value = key switch
+                {
+                    "database_type" => databaseDialect ?? "PostgreSQL",
+                    "description" => description ?? string.Empty,
+                    "environment" => "Development",
+                    "owner" => ownerEmail,
+                    "owner_group" => ownerGroup ?? string.Empty,
+                    "version" => "1.0.0",
+                    "last_update" => DateTime.UtcNow.ToString("yyyy-MM-dd"),
+                    _ => string.Empty,
+                };
+            }
+
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                normalized[key] = value.Trim();
+            }
+        }
+
+        return normalized;
+    }
+
+    private async Task<HashSet<string>> GetUserApplicationRoleNamesAsync(Guid userId)
+    {
+        var roleNames = await _context.UserApplicationRoles
+            .Where(x => x.UserId == userId)
+            .Include(x => x.Role)
+            .Where(x => x.Role != null && x.Role.IsActive)
+            .Select(x => x.Role!.Name)
+            .ToListAsync();
+
+        return roleNames
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name.Trim().ToLowerInvariant())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string? ResolveDefaultRoleFromOu(
+        string userOrganizationUnit,
+        string? modelGroupName,
+        ISet<string> userApplicationRoles)
+    {
+        if (userApplicationRoles.Count == 0)
+        {
+            return null;
+        }
+
+        var globalDefaultRole = ResolveGlobalDefaultRole(userApplicationRoles);
+        if (!string.IsNullOrWhiteSpace(globalDefaultRole))
+        {
+            return globalDefaultRole;
+        }
+
+        var normalizedUserOu = NormalizeOuKey(userOrganizationUnit);
+        var normalizedModelOu = NormalizeOuKey(modelGroupName);
+        if (string.IsNullOrWhiteSpace(normalizedUserOu) || string.IsNullOrWhiteSpace(normalizedModelOu))
+        {
+            return null;
+        }
+
+        // Split by "/" to handle hierarchical OUs (e.g., "DeveloperGroup / Corporate")
+        // Match if model OU is a parent or exact match of user OU
+        var userOuParts = normalizedUserOu.Split('/').Select(p => p.Trim()).ToList();
+        var modelOuParts = normalizedModelOu.Split('/').Select(p => p.Trim()).ToList();
+
+        // Check if all model OU parts exist in user OU parts
+        var ouMatches = modelOuParts.All(modelPart => 
+            userOuParts.Any(userPart => userPart.Equals(modelPart, StringComparison.OrdinalIgnoreCase)));
+
+        if (!ouMatches)
+        {
+            return null;
+        }
+
+        foreach (var roleName in ModelScopedApplicationRolesByPriority)
+        {
+            if (userApplicationRoles.Contains(roleName))
+            {
+                return roleName;
+            }
+        }
+
+        return null;
+    }
+
+    private string? ResolveEffectiveRoleForModel(
+        Model model,
+        Guid userId,
+        bool isSuperAdmin,
+        string userOrganizationUnit,
+        ISet<string> userApplicationRoles)
+    {
+        if (isSuperAdmin)
+        {
+            return "admin";
+        }
+
+        if (model.OwnerId == userId)
+        {
+            return "owner";
+        }
+
+        var explicitCollaboration = model.Collaborators
+            .FirstOrDefault(c => c.UserId == userId);
+
+        if (explicitCollaboration != null)
+        {
+            return explicitCollaboration.Role;
+        }
+
+        return ResolveDefaultRoleFromOu(userOrganizationUnit, model.ModelGroup?.Name, userApplicationRoles);
+    }
+
     private async Task<bool> UserHasAccessAsync(Guid modelId, string minimumRole = "viewer")
     {
         var userId = GetCurrentUserId();
-        var user = await _context.Users.FindAsync(userId);
-
-        if (user?.IsSuperAdmin == true)
-            return true;
-
-        var collaboration = await _context.ModelCollaborators
-            .FirstOrDefaultAsync(c => c.ModelId == modelId && c.UserId == userId);
-
-        if (collaboration != null)
+        if (userId == Guid.Empty)
         {
-            var roleHierarchy = new Dictionary<string, int> { { "viewer", 1 }, { "editor", 2 }, { "owner", 3 } };
-            return roleHierarchy.GetValueOrDefault(collaboration.Role, 0) >= roleHierarchy.GetValueOrDefault(minimumRole, 0);
+            return false;
         }
 
-        return false;
+        var user = await _context.Users.FindAsync(userId);
+        if (user == null)
+        {
+            return false;
+        }
+
+        if (user.IsSuperAdmin)
+        {
+            return true;
+        }
+
+        var model = await _context.Models
+            .Include(m => m.ModelGroup)
+            .Include(m => m.Collaborators)
+            .FirstOrDefaultAsync(m => m.Id == modelId);
+
+        if (model == null)
+        {
+            return false;
+        }
+
+        var userApplicationRoles = await GetUserApplicationRoleNamesAsync(userId);
+        var userOrganizationUnit = ExtractOrganizationUnit(user.LdapDistinguishedName);
+        var effectiveRole = ResolveEffectiveRoleForModel(
+            model,
+            userId,
+            user.IsSuperAdmin,
+            userOrganizationUnit,
+            userApplicationRoles);
+
+        if (string.IsNullOrWhiteSpace(effectiveRole))
+        {
+            return false;
+        }
+
+        return RoleHierarchy.GetValueOrDefault(effectiveRole, 0) >= RoleHierarchy.GetValueOrDefault(minimumRole, 0);
+    }
+
+    private async Task<bool> IsCurrentUserSuperAdminAsync()
+    {
+        var userId = GetCurrentUserId();
+        if (userId == Guid.Empty)
+        {
+            return false;
+        }
+
+        var user = await _context.Users.FindAsync(userId);
+        return user?.IsSuperAdmin == true;
     }
 
     // ============ Model CRUD ============
@@ -67,39 +365,78 @@ public class ModelsController : ControllerBase
         var userId = GetCurrentUserId();
         var user = await _context.Users.FindAsync(userId);
 
-        IQueryable<Model> query;
+        if (user == null)
+        {
+            return Ok(new List<ModelListDto>());
+        }
 
-        if (user?.IsSuperAdmin == true)
-            query = _context.Models.AsQueryable();
-        else
-            query = _context.Models
-                .Where(m => m.OwnerId == userId || m.Collaborators.Any(c => c.UserId == userId));
+        if (user.IsSuperAdmin)
+        {
+            var superAdminModels = await _context.Models
+                .Include(m => m.Owner)
+                .Include(m => m.ModelGroup)
+                .Include(m => m.Versions)
+                .OrderByDescending(m => m.UpdatedAt)
+                .Select(m => new ModelListDto
+                {
+                    Id = m.Id,
+                    Name = m.Name,
+                    Description = m.Description,
+                    OwnerEmail = m.Owner!.Email,
+                    DatabaseDialect = m.DatabaseDialect,
+                    CreatedAt = m.CreatedAt,
+                    UpdatedAt = m.UpdatedAt,
+                    YourRole = m.OwnerId == userId ? "owner" : "admin",
+                    LatestVersion = m.Versions.OrderByDescending(v => v.VersionNumber).Select(v => v.VersionNumber).FirstOrDefault(),
+                    ModelGroupId = m.ModelGroupId,
+                    ModelGroupName = m.ModelGroup != null ? m.ModelGroup.Name : null
+                })
+                .ToListAsync();
 
-        var models = await query
+            return Ok(superAdminModels);
+        }
+
+        var userApplicationRoles = await GetUserApplicationRoleNamesAsync(userId);
+        var userOrganizationUnit = ExtractOrganizationUnit(user.LdapDistinguishedName);
+
+        var models = await _context.Models
             .Include(m => m.Owner)
             .Include(m => m.ModelGroup)
             .Include(m => m.Collaborators)
             .Include(m => m.Versions)
             .OrderByDescending(m => m.UpdatedAt)
-            .Select(m => new ModelListDto
-            {
-                Id = m.Id,
-                Name = m.Name,
-                Description = m.Description,
-                OwnerEmail = m.Owner!.Email,
-                DatabaseDialect = m.DatabaseDialect,
-                CreatedAt = m.CreatedAt,
-                UpdatedAt = m.UpdatedAt,
-                YourRole = m.OwnerId == userId
-                    ? "owner"
-                    : (m.Collaborators.Where(c => c.UserId == userId).Select(c => c.Role).FirstOrDefault() ?? "viewer"),
-                LatestVersion = m.Versions.OrderByDescending(v => v.VersionNumber).Select(v => v.VersionNumber).FirstOrDefault(),
-                ModelGroupId = m.ModelGroupId,
-                ModelGroupName = m.ModelGroup != null ? m.ModelGroup.Name : null
-            })
             .ToListAsync();
 
-        return Ok(models);
+        var visibleModels = models
+            .Select(m => new
+            {
+                Model = m,
+                EffectiveRole = ResolveEffectiveRoleForModel(
+                    m,
+                    userId,
+                    user.IsSuperAdmin,
+                    userOrganizationUnit,
+                    userApplicationRoles)
+            })
+            .Where(x => !string.IsNullOrWhiteSpace(x.EffectiveRole)
+                && RoleHierarchy.GetValueOrDefault(x.EffectiveRole!, 0) >= RoleHierarchy.GetValueOrDefault("viewer", 0))
+            .Select(x => new ModelListDto
+            {
+                Id = x.Model.Id,
+                Name = x.Model.Name,
+                Description = x.Model.Description,
+                OwnerEmail = x.Model.Owner!.Email,
+                DatabaseDialect = x.Model.DatabaseDialect,
+                CreatedAt = x.Model.CreatedAt,
+                UpdatedAt = x.Model.UpdatedAt,
+                YourRole = x.EffectiveRole!,
+                LatestVersion = x.Model.Versions.OrderByDescending(v => v.VersionNumber).Select(v => v.VersionNumber).FirstOrDefault(),
+                ModelGroupId = x.Model.ModelGroupId,
+                ModelGroupName = x.Model.ModelGroup?.Name
+            })
+            .ToList();
+
+        return Ok(visibleModels);
     }
 
     [HttpPost]
@@ -114,14 +451,31 @@ public class ModelsController : ControllerBase
         if (!user.IsSuperAdmin)
             return Forbid();
 
+        string? modelGroupName = null;
         if (request.ModelGroupId.HasValue)
         {
-            var groupExists = await _context.ModelGroups.AnyAsync(g => g.Id == request.ModelGroupId.Value);
-            if (!groupExists)
+            var group = await _context.ModelGroups.FirstOrDefaultAsync(g => g.Id == request.ModelGroupId.Value);
+            if (group == null)
             {
                 return BadRequest("Model group not found");
             }
+
+            modelGroupName = group.Name;
         }
+
+        var activeFields = await _context.ProjectMetadataFieldDefinitions
+            .Where(x => x.IsActive)
+            .OrderBy(x => x.SortOrder)
+            .ToListAsync();
+
+        var normalizedProjectMetadata = NormalizeProjectMetadata(
+            request.ProjectMetadata,
+            activeFields,
+            request.Name,
+            request.Description,
+            request.DatabaseDialect,
+            user.Email,
+            modelGroupName);
 
         var model = new Model
         {
@@ -131,6 +485,7 @@ public class ModelsController : ControllerBase
             OwnerId = userId,
             ModelGroupId = request.ModelGroupId,
             DatabaseDialect = request.DatabaseDialect ?? "PostgreSQL",
+            ProjectMetadataJson = SerializeProjectMetadata(normalizedProjectMetadata),
             CreatedAt = DateTime.UtcNow
         };
 
@@ -164,31 +519,50 @@ public class ModelsController : ControllerBase
 
         _logger.LogInformation($"Model created: {model.Id} by {user.Email}");
         return CreatedAtAction(nameof(GetModel), new { id = model.Id }, 
-            MapModelToDetailDto(model, initialVersion, userId));
+            MapModelToDetailDto(model, initialVersion, "owner"));
     }
 
     [HttpGet("{id}")]
     public async Task<ActionResult<ModelDetailDto>> GetModel(Guid id)
     {
-        if (!await UserHasAccessAsync(id))
-            return Forbid();
-
         var userId = GetCurrentUserId();
         var model = await _context.Models
             .Include(m => m.Owner)
             .Include(m => m.ModelGroup)
+            .Include(m => m.Collaborators)
             .Include(m => m.Versions)
             .FirstOrDefaultAsync(m => m.Id == id);
 
         if (model == null)
             return NotFound();
 
+        var user = await _context.Users.FindAsync(userId);
+        if (user == null)
+        {
+            return Unauthorized();
+        }
+
+        var userApplicationRoles = await GetUserApplicationRoleNamesAsync(userId);
+        var userOrganizationUnit = ExtractOrganizationUnit(user.LdapDistinguishedName);
+        var effectiveRole = ResolveEffectiveRoleForModel(
+            model,
+            userId,
+            user.IsSuperAdmin,
+            userOrganizationUnit,
+            userApplicationRoles);
+
+        if (string.IsNullOrWhiteSpace(effectiveRole)
+            || RoleHierarchy.GetValueOrDefault(effectiveRole, 0) < RoleHierarchy.GetValueOrDefault("viewer", 0))
+        {
+            return Forbid();
+        }
+
         var latestVersion = model.Versions
             .Where(v => v.BranchName == "main")
             .OrderByDescending(v => v.VersionNumber)
             .FirstOrDefault();
 
-        return Ok(MapModelToDetailDto(model, latestVersion, userId));
+        return Ok(MapModelToDetailDto(model, latestVersion, effectiveRole));
     }
 
     [HttpPut("{id}")]
@@ -199,7 +573,9 @@ public class ModelsController : ControllerBase
 
         var userId = GetCurrentUserId();
         var model = await _context.Models
+            .Include(m => m.Collaborators)
             .Include(m => m.ModelGroup)
+            .Include(m => m.Owner)
             .Include(m => m.Versions)
             .FirstOrDefaultAsync(m => m.Id == id);
 
@@ -209,6 +585,37 @@ public class ModelsController : ControllerBase
         model.Name = request.Name ?? model.Name;
         model.Description = request.Description;
         model.DatabaseDialect = request.DatabaseDialect ?? model.DatabaseDialect;
+
+        var activeFields = await _context.ProjectMetadataFieldDefinitions
+            .Where(x => x.IsActive)
+            .OrderBy(x => x.SortOrder)
+            .ToListAsync();
+
+        var existingMetadata = DeserializeProjectMetadata(model.ProjectMetadataJson);
+        if (request.ProjectMetadata != null)
+        {
+            foreach (var pair in request.ProjectMetadata)
+            {
+                var key = NormalizeMetadataKey(pair.Key);
+                if (key.Length == 0)
+                {
+                    continue;
+                }
+
+                existingMetadata[key] = pair.Value ?? string.Empty;
+            }
+        }
+
+        var normalizedProjectMetadata = NormalizeProjectMetadata(
+            existingMetadata,
+            activeFields,
+            model.Name,
+            model.Description,
+            model.DatabaseDialect,
+            model.Owner?.Email ?? string.Empty,
+            model.ModelGroup?.Name);
+
+        model.ProjectMetadataJson = SerializeProjectMetadata(normalizedProjectMetadata);
         model.UpdatedAt = DateTime.UtcNow;
 
         // Create new version if DBML content changed
@@ -247,7 +654,17 @@ public class ModelsController : ControllerBase
             .OrderByDescending(v => v.VersionNumber)
             .FirstOrDefault();
 
-        return Ok(MapModelToDetailDto(model, latestVer, userId));
+        var currentUser = await _context.Users.FindAsync(userId);
+        var userRoles = currentUser != null ? await GetUserApplicationRoleNamesAsync(userId) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var userOu = currentUser != null ? ExtractOrganizationUnit(currentUser.LdapDistinguishedName) : string.Empty;
+        var effectiveRole = ResolveEffectiveRoleForModel(
+            model,
+            userId,
+            currentUser?.IsSuperAdmin == true,
+            userOu,
+            userRoles) ?? "viewer";
+
+        return Ok(MapModelToDetailDto(model, latestVer, effectiveRole));
     }
 
     [HttpGet("groups")]
@@ -268,8 +685,23 @@ public class ModelsController : ControllerBase
         }
         else
         {
-            visibleModels = _context.Models
-                .Where(m => m.OwnerId == userId || m.Collaborators.Any(c => c.UserId == userId));
+            var userApplicationRoles = await GetUserApplicationRoleNamesAsync(userId);
+            var userOrganizationUnit = user != null ? ExtractOrganizationUnit(user.LdapDistinguishedName) : string.Empty;
+
+            var accessibleModelIds = (await _context.Models
+                .Include(m => m.ModelGroup)
+                .Include(m => m.Collaborators)
+                .ToListAsync())
+                .Where(m => !string.IsNullOrWhiteSpace(ResolveEffectiveRoleForModel(
+                    m,
+                    userId,
+                    false,
+                    userOrganizationUnit,
+                    userApplicationRoles)))
+                .Select(m => m.Id)
+                .ToList();
+
+            visibleModels = _context.Models.Where(m => accessibleModelIds.Contains(m.Id));
         }
 
         // Count models per group for visible models
@@ -296,6 +728,45 @@ public class ModelsController : ControllerBase
         });
 
         return Ok(result);
+    }
+
+    [HttpGet("project-metadata/fields")]
+    [AllowAnonymous]
+    public async Task<ActionResult<List<ProjectMetadataFieldDefinitionDto>>> GetProjectMetadataFields()
+    {
+        var fields = await _context.ProjectMetadataFieldDefinitions
+            .Where(x => x.IsActive)
+            .OrderBy(x => x.SortOrder)
+            .ThenBy(x => x.DisplayName)
+            .ToListAsync();
+
+        var mapped = fields.Select(field =>
+        {
+            List<string> options;
+            try
+            {
+                options = JsonSerializer.Deserialize<List<string>>(field.OptionsJson ?? "[]") ?? new List<string>();
+            }
+            catch
+            {
+                options = new List<string>();
+            }
+
+            return new ProjectMetadataFieldDefinitionDto
+            {
+                Id = field.Id,
+                FieldKey = field.FieldKey,
+                DisplayName = field.DisplayName,
+                FieldType = field.FieldType,
+                IsRequired = field.IsRequired,
+                IsSystem = field.IsSystem,
+                IsActive = field.IsActive,
+                SortOrder = field.SortOrder,
+                Options = options
+            };
+        }).ToList();
+
+        return Ok(mapped);
     }
 
     [HttpPost("groups")]
@@ -454,6 +925,46 @@ public class ModelsController : ControllerBase
         }
     }
 
+    [HttpPost("reverse-engine/tables")]
+    public async Task<ActionResult<List<ReverseEngineTableDto>>> GetReverseEngineTables([FromBody] ReverseEngineGetTablesRequestDto request, CancellationToken cancellationToken)
+    {
+        if (!await IsCurrentUserSuperAdminAsync())
+        {
+            return Forbid();
+        }
+
+        try
+        {
+            var tables = await _reverseEngineeringService.GetTablesAsync(request, cancellationToken);
+            return Ok(tables);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Reverse-engine table discovery failed for database type {DatabaseType}", request.DatabaseType);
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
+    [HttpPost("reverse-engine/generate-dbml")]
+    public async Task<ActionResult<ReverseEngineGenerateDbmlResponseDto>> GenerateDbmlFromReverseEngine([FromBody] ReverseEngineGenerateDbmlRequestDto request, CancellationToken cancellationToken)
+    {
+        if (!await IsCurrentUserSuperAdminAsync())
+        {
+            return Forbid();
+        }
+
+        try
+        {
+            var result = await _reverseEngineeringService.GenerateDbmlAsync(request, cancellationToken);
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Reverse-engine DBML generation failed for database type {DatabaseType}", request.DatabaseType);
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     // ============ Model Versions ============
 
     [HttpGet("{modelId}/versions")]
@@ -515,6 +1026,8 @@ public class ModelsController : ControllerBase
 
         var userId = GetCurrentUserId();
         var model = await _context.Models
+            .Include(m => m.Collaborators)
+            .Include(m => m.ModelGroup)
             .Include(m => m.Versions)
             .FirstOrDefaultAsync(m => m.Id == modelId);
 
@@ -553,7 +1066,17 @@ public class ModelsController : ControllerBase
 
         // AuditLog("restore_version", modelId, $"Restored from version {versionNumber}");
 
-        return Ok(MapModelToDetailDto(model, restoredVersion, userId));
+        var currentUser = await _context.Users.FindAsync(userId);
+        var userRoles = currentUser != null ? await GetUserApplicationRoleNamesAsync(userId) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var userOu = currentUser != null ? ExtractOrganizationUnit(currentUser.LdapDistinguishedName) : string.Empty;
+        var effectiveRole = ResolveEffectiveRoleForModel(
+            model,
+            userId,
+            currentUser?.IsSuperAdmin == true,
+            userOu,
+            userRoles) ?? "viewer";
+
+        return Ok(MapModelToDetailDto(model, restoredVersion, effectiveRole));
     }
 
     // ============ Collaborators ============
@@ -617,7 +1140,7 @@ public class ModelsController : ControllerBase
 
     // ============ Helper Methods ============
 
-    private ModelDetailDto MapModelToDetailDto(Model model, ModelVersion? version, Guid userId)
+    private ModelDetailDto MapModelToDetailDto(Model model, ModelVersion? version, string effectiveRole)
     {
         ErdDataDto erdData;
         if (!string.IsNullOrWhiteSpace(version?.DbmlContent))
@@ -641,6 +1164,8 @@ public class ModelsController : ControllerBase
             erdData = new ErdDataDto { Nodes = new(), Relationships = new() };
         }
 
+        var metadata = DeserializeProjectMetadata(model.ProjectMetadataJson);
+
         return new ModelDetailDto
         {
             Id = model.Id,
@@ -653,21 +1178,11 @@ public class ModelsController : ControllerBase
             LatestVersion = version?.VersionNumber ?? 0,
             DbmlContent = version?.DbmlContent ?? string.Empty,
             ErdData = erdData,
-            YourRole = GetUserRoleForModel(model, userId),
+            YourRole = effectiveRole,
             ModelGroupId = model.ModelGroupId,
-            ModelGroupName = model.ModelGroup?.Name
+            ModelGroupName = model.ModelGroup?.Name,
+            ProjectMetadata = metadata
         };
-    }
-
-    private string GetUserRoleForModel(Model model, Guid userId)
-    {
-        if (model.OwnerId == userId)
-            return "owner";
-
-        var collaboration = _context.ModelCollaborators
-            .FirstOrDefault(c => c.ModelId == model.Id && c.UserId == userId);
-
-        return collaboration?.Role ?? "viewer";
     }
 
     // private void AuditLog(string action, Guid modelId, string details) - DISABLED

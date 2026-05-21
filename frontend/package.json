@@ -25,6 +25,7 @@
     "zod": "^3.22.0",
     "zustand": "^4.4.0",
     "reactflow": "^11.10.0",
+    "@xyflow/react": "^12.3.6",
     "cytoscape": "^3.28.0",
     "react-cytoscapejs": "^2.0.0",
     "monaco-editor": "^0.50.0",

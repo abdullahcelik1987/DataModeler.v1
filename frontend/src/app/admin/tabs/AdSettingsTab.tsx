@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080').replace(/\/$/, '').replace(/\/api$/, '');
 
 interface LdapConfig {
   server?: string;
@@ -13,13 +13,6 @@ interface LdapConfig {
   useSSL?: boolean;
 }
 
-interface AzureAdConfig {
-  tenantId?: string;
-  clientId?: string;
-  clientSecret?: string;
-  authority?: string;
-}
-
 interface AdSettings {
   ldap?: {
     isEnabled: boolean;
@@ -27,13 +20,32 @@ interface AdSettings {
     testStatus?: boolean;
     lastTestedAt?: string;
   };
-  azureAd?: {
-    isEnabled: boolean;
-    config: AzureAdConfig;
-    testStatus?: boolean;
-    lastTestedAt?: string;
-  };
 }
+
+const normalizeLdapConfig = (config: any): LdapConfig => {
+  const source = config ?? {};
+
+  const readBool = (...keys: string[]): boolean | undefined => {
+    for (const key of keys) {
+      const value = source?.[key];
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'string') {
+        if (value.toLowerCase() === 'true') return true;
+        if (value.toLowerCase() === 'false') return false;
+      }
+    }
+    return undefined;
+  };
+
+  return {
+    server: source.server ?? source.host ?? source.ldapServer ?? '',
+    port: Number(source.port ?? source.ldapPort ?? 389),
+    baseDn: source.baseDn ?? source.baseDN ?? source.searchBase ?? source.dn ?? '',
+    adminUsername: source.adminUsername ?? source.bindDn ?? source.bindDN ?? source.username ?? '',
+    adminPassword: source.adminPassword ?? source.bindPassword ?? source.password ?? '',
+    useSSL: readBool('useSSL', 'useSsl', 'ssl') ?? false
+  };
+};
 
 export function AdSettingsTab() {
   const [settings, setSettings] = useState<AdSettings>({});
@@ -41,29 +53,57 @@ export function AdSettingsTab() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [testingProvider, setTestingProvider] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
 
-  const cardClass = 'bg-slate-50 border border-slate-200 rounded-xl p-6';
-  const inputClass = 'w-full px-3 py-2.5 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500';
+  const cardClass = 'dm-panel p-6';
+  const inputClass = 'dm-input';
   const checkboxClass = 'rounded border-slate-300 text-indigo-600 focus:ring-indigo-500';
-  const primaryButtonClass = 'px-4 py-2.5 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:bg-slate-400 transition';
-  const successButtonClass = 'px-6 py-2.5 bg-emerald-600 text-white font-medium rounded-lg hover:bg-emerald-700 disabled:bg-slate-400 transition';
+  const primaryButtonClass = 'dm-btn-secondary h-10';
+  const successButtonClass = 'dm-btn-primary h-10';
+
+  const toAdSettings = (payload: any): AdSettings => {
+    const ldap = payload?.ldap ?? payload?.Ldap;
+    if (!ldap) {
+      return { ldap: { isEnabled: false, config: {} } };
+    }
+
+    return {
+      ldap: {
+        ...ldap,
+        config: normalizeLdapConfig(ldap.config)
+      }
+    };
+  };
 
   useEffect(() => {
     fetchAdSettings();
   }, []);
 
   const fetchAdSettings = async () => {
+    setError(null);
     try {
-      const token = localStorage.getItem('auth-token');
-      const response = await fetch('/api/admin/settings/ad', {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        setError('Session token is missing. Please sign in again.');
+        setLoading(false);
+        return;
+      }
+
+      const response = await fetch(`${API_URL}/api/admin/settings/ad`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      const data = await response.json();
-      setSettings(data);
-      setLoading(false);
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(data?.message || `Failed to load AD settings (${response.status})`);
+        setLoading(false);
+        return;
+      }
+
+      setSettings(toAdSettings(data));
     } catch (err) {
       setError('Failed to load AD settings');
+    } finally {
       setLoading(false);
     }
   };
@@ -74,7 +114,11 @@ export function AdSettingsTab() {
     setSuccess(null);
 
     try {
-      const token = localStorage.getItem('auth-token');
+      const token = localStorage.getItem('token');
+      if (!token) {
+        setError('Session token is missing. Please sign in again.');
+        return;
+      }
       const providers = [];
 
       if (settings.ldap) {
@@ -85,15 +129,7 @@ export function AdSettingsTab() {
         });
       }
 
-      if (settings.azureAd) {
-        providers.push({
-          type: 'azure_ad',
-          isEnabled: settings.azureAd.isEnabled,
-          config: settings.azureAd.config
-        });
-      }
-
-      const response = await fetch('/api/admin/settings/ad', {
+      const response = await fetch(`${API_URL}/api/admin/settings/ad`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -102,28 +138,33 @@ export function AdSettingsTab() {
         body: JSON.stringify({ providers })
       });
 
-      const data = await response.json();
-      if (data.success) {
-        setSuccess('AD settings saved successfully');
+      const data = await response.json().catch(() => null);
+      if (response.ok && data?.success) {
+        setSuccess('LDAP settings saved successfully');
         await fetchAdSettings();
       } else {
-        setError(data.message || 'Failed to save settings');
+        setError(data?.message || `Failed to save settings (${response.status})`);
       }
     } catch (err) {
-      setError('Error saving AD settings');
+      setError('Error saving LDAP settings');
     } finally {
       setSaving(false);
     }
   };
 
-  const handleTestConnection = async (provider: 'ldap' | 'azure_ad') => {
-    setTestingProvider(provider);
+  const handleTestConnection = async () => {
+    setTesting(true);
     setError(null);
     setSuccess(null);
 
     try {
-      const token = localStorage.getItem('auth-token');
-      const config = provider === 'ldap' ? settings.ldap?.config : settings.azureAd?.config;
+      const token = localStorage.getItem('token');
+      if (!token) {
+        setError('Session token is missing. Please sign in again.');
+        return;
+      }
+
+      const config = settings.ldap?.config;
 
       const response = await fetch(`${API_URL}/api/admin/settings/ad/test-connection`, {
         method: 'POST',
@@ -132,21 +173,26 @@ export function AdSettingsTab() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          provider: provider === 'ldap' ? 'ldap' : 'azure_ad',
+          provider: 'ldap',
           config
         })
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(data?.message || `Connection test failed (${response.status}). Please sign in again.`);
+        return;
+      }
+
       if (data.isSuccessful) {
-        setSuccess(`${provider === 'ldap' ? 'LDAP' : 'Azure AD'} connection successful!`);
+        setSuccess('LDAP connection successful!');
       } else {
         setError(data.message || 'Connection test failed');
       }
     } catch (err) {
       setError('Error testing connection');
     } finally {
-      setTestingProvider(null);
+      setTesting(false);
     }
   };
 
@@ -168,7 +214,11 @@ export function AdSettingsTab() {
         </div>
       )}
 
-      {/* LDAP Section */}
+      <div className="dm-panel p-4">
+        <h3 className="text-base font-semibold text-slate-900">Active Directory (LDAP) Configuration</h3>
+        <p className="text-xs text-slate-500 mt-1">Use this section to test and persist LDAP integration settings.</p>
+      </div>
+
       <div className={cardClass}>
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-slate-900">LDAP (On-Premises AD)</h3>
@@ -300,113 +350,23 @@ export function AdSettingsTab() {
         </div>
 
         <div className="mt-4">
-          <button
-            onClick={() => handleTestConnection('ldap')}
-            disabled={testingProvider === 'ldap'}
-            className={primaryButtonClass}
-          >
-            {testingProvider === 'ldap' ? 'Testing...' : 'Test Connection'}
-          </button>
-        </div>
-      </div>
-
-      {/* Azure AD Section */}
-      <div className={cardClass}>
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-slate-900">Azure AD (Entra ID)</h3>
-          <label className="flex items-center">
-            <input
-              type="checkbox"
-              checked={settings.azureAd?.isEnabled ?? false}
-              onChange={(e) => setSettings({
-                ...settings,
-                azureAd: {
-                  ...settings.azureAd,
-                  isEnabled: e.target.checked,
-                  config: settings.azureAd?.config ?? {}
-                }
-              })}
-              className={checkboxClass}
-            />
-            <span className="ml-2 text-sm text-slate-600">Enable</span>
-          </label>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">Tenant ID</label>
-            <input
-              type="text"
-              value={settings.azureAd?.config?.tenantId ?? ''}
-              onChange={(e) => setSettings({
-                ...settings,
-                azureAd: {
-                  ...settings.azureAd,
-                  isEnabled: settings.azureAd?.isEnabled ?? false,
-                  config: { ...settings.azureAd?.config, tenantId: e.target.value }
-                }
-              })}
-              placeholder="your-tenant-id"
-              className={inputClass}
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">Client ID</label>
-            <input
-              type="text"
-              value={settings.azureAd?.config?.clientId ?? ''}
-              onChange={(e) => setSettings({
-                ...settings,
-                azureAd: {
-                  ...settings.azureAd,
-                  isEnabled: settings.azureAd?.isEnabled ?? false,
-                  config: { ...settings.azureAd?.config, clientId: e.target.value }
-                }
-              })}
-              placeholder="your-client-id"
-              className={inputClass}
-            />
-          </div>
-
-          <div className="col-span-2">
-            <label className="block text-sm font-medium text-slate-700 mb-2">Client Secret</label>
-            <input
-              type="password"
-              value={settings.azureAd?.config?.clientSecret ?? ''}
-              onChange={(e) => setSettings({
-                ...settings,
-                azureAd: {
-                  ...settings.azureAd,
-                  isEnabled: settings.azureAd?.isEnabled ?? false,
-                  config: { ...settings.azureAd?.config, clientSecret: e.target.value }
-                }
-              })}
-              className={inputClass}
-            />
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={handleTestConnection}
+              disabled={testing}
+              className={primaryButtonClass}
+            >
+              {testing ? 'Testing...' : 'Test Connection'}
+            </button>
+            <button
+              onClick={handleSaveSettings}
+              disabled={saving}
+              className={successButtonClass}
+            >
+              {saving ? 'Saving...' : 'Save Settings'}
+            </button>
           </div>
         </div>
-
-        <div className="mt-4">
-          <button
-            onClick={() => handleTestConnection('azure_ad')}
-            disabled={testingProvider === 'azure_ad'}
-            className={primaryButtonClass}
-          >
-            {testingProvider === 'azure_ad' ? 'Testing...' : 'Test Connection'}
-          </button>
-        </div>
-      </div>
-
-      {/* Save Button */}
-      <div className="flex gap-4">
-        <button
-          onClick={handleSaveSettings}
-          disabled={saving}
-          className={successButtonClass}
-        >
-          {saving ? 'Saving...' : 'Save Settings'}
-        </button>
       </div>
     </div>
   );

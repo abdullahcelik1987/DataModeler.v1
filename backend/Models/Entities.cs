@@ -45,6 +45,9 @@ public class User
     public ICollection<Model> OwnedModels { get; set; } = new List<Model>();
     public ICollection<ModelCollaborator> Collaborations { get; set; } = new List<ModelCollaborator>();
     public ICollection<AuditLog> AuditLogs { get; set; } = new List<AuditLog>();
+    public ICollection<UserApplicationRole> ApplicationRoles { get; set; } = new List<UserApplicationRole>();
+    public ICollection<ChangeRequest> ChangeRequests { get; set; } = new List<ChangeRequest>();
+    public ICollection<ChangeRequestApprovalLog> ChangeRequestApprovalLogs { get; set; } = new List<ChangeRequestApprovalLog>();
 }
 
 /// <summary>
@@ -67,6 +70,8 @@ public class Model
     public Guid? ModelGroupId { get; set; }
     [Column("database_dialect")]
     public string DatabaseDialect { get; set; } = "PostgreSQL";
+    [Column("project_metadata_json")]
+    public string ProjectMetadataJson { get; set; } = "{}";
     [Column("created_at")]
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     [Column("updated_at")]

@@ -35,14 +35,14 @@ public class DbmlParserService : IDbmlParserService
             var cleanedContent = RemoveComments(dbmlContent);
 
             // Extract tables
-            var tablePattern = @"Table\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{[^}]+\})";
+            var tablePattern = @"Table\s+([^\s\{]+)\s*(\{[^}]+\})";
             var tableMatches = Regex.Matches(cleanedContent, tablePattern, RegexOptions.IgnoreCase);
 
             foreach (Match tableMatch in tableMatches)
             {
                 try
                 {
-                    var tableName = tableMatch.Groups[1].Value.Trim();
+                    var tableName = NormalizeTableToken(tableMatch.Groups[1].Value.Trim());
                     var tableContent = tableMatch.Groups[2].Value.Trim();
 
                     var tableNode = ParseTable(tableName, tableContent);
@@ -55,18 +55,20 @@ public class DbmlParserService : IDbmlParserService
             }
 
             // Extract relationships
-            var relationshipPattern = @"Ref:\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(<|>)(-)?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)";
+            var relationshipPattern = @"Ref:\s*(?<left>[^\s]+)\s*(?<rel><>|<|>|-)\s*(?<right>[^\s]+)";
             var relationshipMatches = Regex.Matches(cleanedContent, relationshipPattern, RegexOptions.IgnoreCase);
 
             foreach (Match refMatch in relationshipMatches)
             {
                 try
                 {
-                    var fromTable = refMatch.Groups[1].Value.Trim();
-                    var fromColumn = refMatch.Groups[2].Value.Trim();
-                    var relationType = refMatch.Groups[3].Value; // < for many, > for one
-                    var toTable = refMatch.Groups[5].Value.Trim();
-                    var toColumn = refMatch.Groups[6].Value.Trim();
+                    if (!TryParseReferenceEndpoint(refMatch.Groups["left"].Value.Trim(), out var fromTable, out var fromColumn))
+                        continue;
+
+                    if (!TryParseReferenceEndpoint(refMatch.Groups["right"].Value.Trim(), out var toTable, out var toColumn))
+                        continue;
+
+                    var relationType = refMatch.Groups["rel"].Value;
 
                     var relationship = new DbmlRelationshipDto
                     {
@@ -267,6 +269,56 @@ public class DbmlParserService : IDbmlParserService
         var plainPattern = $"{key}\\s*:\\s*(?<value>[^,\\]]+)";
         var plainMatch = Regex.Match(settingsText, plainPattern, RegexOptions.IgnoreCase);
         return plainMatch.Success ? plainMatch.Groups["value"].Value.Trim() : null;
+    }
+
+    private static bool TryParseReferenceEndpoint(string endpoint, out string tableName, out string columnName)
+    {
+        tableName = string.Empty;
+        columnName = string.Empty;
+
+        var endpointPattern = "^(?<table>(?:\"[^\"]+\"|\\[[^\\]]+\\]|`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\.\\s*(?:\"[^\"]+\"|\\[[^\\]]+\\]|`[^`]+`|[A-Za-z_][A-Za-z0-9_]*))*)\\s*\\.\\s*(?<column>\"[^\"]+\"|\\[[^\\]]+\\]|`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)$";
+        var match = Regex.Match(endpoint, endpointPattern, RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        tableName = NormalizeTableToken(match.Groups["table"].Value);
+        columnName = NormalizeIdentifierToken(match.Groups["column"].Value);
+        return !string.IsNullOrWhiteSpace(tableName) && !string.IsNullOrWhiteSpace(columnName);
+    }
+
+    private static string NormalizeTableToken(string tableToken)
+    {
+        if (string.IsNullOrWhiteSpace(tableToken))
+            return string.Empty;
+
+        var segments = tableToken
+            .Split('.', StringSplitOptions.RemoveEmptyEntries)
+            .Select(segment => NormalizeIdentifierToken(segment))
+            .Where(segment => !string.IsNullOrWhiteSpace(segment))
+            .ToList();
+
+        if (segments.Count == 0)
+            return string.Empty;
+
+        return segments[^1];
+    }
+
+    private static string NormalizeIdentifierToken(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            return string.Empty;
+
+        var normalized = token.Trim();
+        normalized = normalized.Trim('"', '`');
+
+        if (normalized.StartsWith("[", StringComparison.Ordinal) && normalized.EndsWith("]", StringComparison.Ordinal) && normalized.Length > 1)
+        {
+            normalized = normalized.Substring(1, normalized.Length - 2);
+        }
+
+        return normalized.Trim();
     }
 
     /// <summary>

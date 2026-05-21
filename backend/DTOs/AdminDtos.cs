@@ -68,16 +68,41 @@ public class AzureAdConfigDto
 public class DevopsSettingsDto
 {
     public bool IsConfigured { get; set; }
+    public bool IsEnabled { get; set; }
+    public bool HasPersonalAccessToken { get; set; }
     public string? ServerUrl { get; set; }
-    public string? ProjectName { get; set; }
-    public string? RepositoryName { get; set; }
+    public string? CollectionName { get; set; }
 }
 
 public class SaveDevopsSettingsRequestDto
 {
     public string ServerUrl { get; set; } = string.Empty;
+    public string CollectionName { get; set; } = string.Empty;
+    public string? PersonalAccessToken { get; set; }
+    public bool IsEnabled { get; set; } = true;
+}
+
+public class DevopsRepositoryMappingDto
+{
+    public Guid Id { get; set; }
+    public Guid ModelId { get; set; }
+    public string ModelName { get; set; } = string.Empty;
     public string ProjectName { get; set; } = string.Empty;
     public string RepositoryName { get; set; } = string.Empty;
+    public string BranchName { get; set; } = "main";
+    public string FilePath { get; set; } = "/models/model.dbml";
+    public bool IsEnabled { get; set; } = true;
+    public DateTime UpdatedAt { get; set; }
+}
+
+public class SaveDevopsRepositoryMappingRequestDto
+{
+    public Guid ModelId { get; set; }
+    public string ProjectName { get; set; } = string.Empty;
+    public string RepositoryName { get; set; } = string.Empty;
+    public string BranchName { get; set; } = "main";
+    public string FilePath { get; set; } = "/models/model.dbml";
+    public bool IsEnabled { get; set; } = true;
 }
 
 // ============ Audit Logs DTOs ============
@@ -120,6 +145,127 @@ public class TestRepositoryRequestDto
 {
     public string ServerUrl { get; set; } = string.Empty;
     public string PersonalAccessToken { get; set; } = string.Empty;
+}
+
+// ============ Database System & Data Type DTOs ============
+
+public class DatabaseDataTypeDto
+{
+    public Guid Id { get; set; }
+    public Guid DatabaseSystemId { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string InputTemplate { get; set; } = string.Empty;
+    public List<DatabaseDataTypeParameterDto> Parameters { get; set; } = new();
+    public bool RequiresLength { get; set; }
+    public bool SupportsPrecisionScale { get; set; }
+    public bool IsActive { get; set; }
+    public int SortOrder { get; set; }
+}
+
+public class DatabaseDataTypeParameterDto
+{
+    public string Key { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public string InputType { get; set; } = "text"; // text | number
+    public string? DefaultValue { get; set; }
+}
+
+public class DatabaseSystemDto
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Key { get; set; } = string.Empty;
+    public bool IsActive { get; set; }
+    public List<DatabaseDataTypeDto> DataTypes { get; set; } = new();
+}
+
+public class CreateDatabaseSystemRequestDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Key { get; set; }
+}
+
+public class UpdateDatabaseSystemRequestDto
+{
+    public string Name { get; set; } = string.Empty;
+    public bool IsActive { get; set; } = true;
+}
+
+public class CreateDatabaseDataTypeRequestDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string? InputTemplate { get; set; }
+    public List<DatabaseDataTypeParameterDto>? Parameters { get; set; }
+    public bool RequiresLength { get; set; }
+    public bool SupportsPrecisionScale { get; set; }
+    public int SortOrder { get; set; }
+}
+
+public class UpdateDatabaseDataTypeRequestDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string? InputTemplate { get; set; }
+    public List<DatabaseDataTypeParameterDto>? Parameters { get; set; }
+    public bool RequiresLength { get; set; }
+    public bool SupportsPrecisionScale { get; set; }
+    public bool IsActive { get; set; } = true;
+    public int SortOrder { get; set; }
+}
+
+// ============ Project Metadata Field Definition DTOs ============
+
+public class ProjectMetadataFieldDefinitionDto
+{
+    public Guid Id { get; set; }
+    public string FieldKey { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string FieldType { get; set; } = "text";
+    public bool IsRequired { get; set; }
+    public bool IsSystem { get; set; }
+    public bool IsActive { get; set; }
+    public List<string> Options { get; set; } = new();
+    public int SortOrder { get; set; }
+}
+
+public class SaveProjectMetadataFieldDefinitionsRequestDto
+{
+    public List<ProjectMetadataFieldDefinitionDto> Fields { get; set; } = new();
+}
+
+// ============ Workflow Designer DTOs ============
+
+public class WorkflowStageDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string RequiredRole { get; set; } = string.Empty;
+    public string PendingStatus { get; set; } = string.Empty;
+    public int? ApproveToStageIndex { get; set; }
+    public int? RejectToStageIndex { get; set; }
+}
+
+public class SaveWorkflowTemplateRequestDto
+{
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public List<WorkflowStageDto> Stages { get; set; } = new();
+}
+
+public class WorkflowTemplateResponseDto
+{
+    public bool Success { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public string TemplateName { get; set; } = string.Empty;
+    public int StageCount { get; set; }
+}
+
+public class WorkflowTemplateDto
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public List<WorkflowStageDto> Stages { get; set; } = new();
+    public bool IsActive { get; set; }
+    public DateTime UpdatedAt { get; set; }
 }
 
 // ============ Generic Response DTOs ============

@@ -3,18 +3,25 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/src/hooks/useAuth';
+import { AppShell } from '@/src/components/admin/AppShell';
 import { ProtectedRoute } from '@/src/components/ProtectedRoute';
 import { ImportExportModal } from '@/src/components/ImportExportModal';
+import { ReverseEngineModal } from '@/src/components/ReverseEngineModal';
 import { ModelGroupDto, ModelListDto } from '@/src/types/dbml';
+import { getStandardTabClass } from '@/src/lib/tabStyles';
 import {
   DbmlProjectMetadata,
+  ProjectMetadataFieldDefinition,
   ProjectEnvironment,
   buildProjectBlock,
   createDefaultProjectMetadata,
   getTodayIsoDate,
+  sanitizeMetadataByDefinitions,
+  setMetadataFieldValue,
+  toProjectMetadataPayload,
 } from '@/src/lib/dbmlProjectMetadata';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080').replace(/\/$/, '').replace(/\/api$/, '');
 const UNGROUPED_GROUP = 'Ungrouped';
 
 function ModelsContent() {
@@ -25,22 +32,26 @@ function ModelsContent() {
   const [error, setError] = useState<string | null>(null);
   const [showNewModal, setShowNewModal] = useState(false);
   const [showImportExportModal, setShowImportExportModal] = useState(false);
+  const [showReverseEngineModal, setShowReverseEngineModal] = useState(false);
+  const [importExportDefaultTab, setImportExportDefaultTab] = useState<'import' | 'export'>('import');
+  const [activeQuickTab, setActiveQuickTab] = useState<'add' | 'import' | 'export' | 'reverse'>('import');
   const [newModelName, setNewModelName] = useState('');
   const [newModelDescription, setNewModelDescription] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [groups, setGroups] = useState<ModelGroupDto[]>([]);
-  const [newGroupName, setNewGroupName] = useState('');
+  const [ownerGroups, setOwnerGroups] = useState<string[]>([]);
   const [expandedGroup, setExpandedGroup] = useState<string>(UNGROUPED_GROUP);
-  const [creatingGroup, setCreatingGroup] = useState(false);
-  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [metadataFields, setMetadataFields] = useState<ProjectMetadataFieldDefinition[]>([]);
   const [newModelMetadata, setNewModelMetadata] = useState<DbmlProjectMetadata>(
     createDefaultProjectMetadata({
       environment: 'Development',
     })
   );
 
-  const primaryButtonClass = 'inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60';
-  const secondaryButtonClass = 'inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60';
+  const openImportExportModal = (tab: 'import' | 'export') => {
+    setImportExportDefaultTab(tab);
+    setShowImportExportModal(true);
+  };
 
   useEffect(() => {
     void syncData();
@@ -85,11 +96,67 @@ function ModelsContent() {
     }
   };
 
+  const fetchOwnerGroups = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const headers = { Authorization: `Bearer ${token}` };
+
+      const [usersResponse, groupsResponse] = await Promise.all([
+        fetch(`${API_URL}/api/authorization/users`, { headers }),
+        fetch(`${API_URL}/api/models/groups`, { headers })
+      ]);
+
+      const payload = usersResponse.ok
+        ? await usersResponse.json().catch(() => ({ success: false, data: [] as Array<{ organizationUnit?: string; authSource?: string }> }))
+        : { success: false, data: [] as Array<{ organizationUnit?: string; authSource?: string }> };
+      const users = ((payload?.data || []) as Array<{ organizationUnit?: string; authSource?: string }>);
+      const unitsFromUsers = users
+        .filter((item) => item.authSource === 'ldap')
+        .map((item) => (item.organizationUnit || '').trim())
+        .filter((value) => value.length > 0);
+
+      const groupsPayload = groupsResponse.ok
+        ? await groupsResponse.json().catch(() => [] as Array<{ name?: string }>)
+        : [] as Array<{ name?: string }>;
+      const unitsFromGroups = (groupsPayload || [])
+        .map((group: { name?: string }) => (group.name || '').trim())
+        .filter((name: string) => name.length > 0 && name.localeCompare(UNGROUPED_GROUP, undefined, { sensitivity: 'base' }) !== 0);
+
+      const units = Array.from(new Set([...unitsFromUsers, ...unitsFromGroups]))
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+      setOwnerGroups(units);
+    } catch {
+      setOwnerGroups([]);
+    }
+  };
+
+  const fetchMetadataFields = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/api/models/project-metadata/fields`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to load metadata fields');
+      }
+
+      const payload = (await response.json()) as ProjectMetadataFieldDefinition[];
+      const activeFields = (payload || []).filter(
+        (field) => field.isActive && field.fieldKey.trim().toLowerCase() !== 'business_domain'
+      );
+      setMetadataFields(activeFields);
+      setNewModelMetadata((current) => sanitizeMetadataByDefinitions(current, activeFields));
+    } catch {
+      setMetadataFields([]);
+    }
+  };
+
   const syncData = async () => {
     setError(null);
     try {
-      await Promise.all([fetchModels(), fetchGroups()]);
-      setLastSyncedAt(new Date());
+      await Promise.all([fetchModels(), fetchGroups(), fetchOwnerGroups(), fetchMetadataFields()]);
     } catch {
       setError('Failed to refresh data');
     }
@@ -106,16 +173,45 @@ function ModelsContent() {
       return;
     }
 
+    if (ownerGroups.length === 0) {
+      setError('No Organization Unit found. Import LDAP users first and then select an Owner Group.');
+      return;
+    }
+
+    const normalizedOwnerGroup = (newModelMetadata.ownerGroup || '').trim();
+    if (!normalizedOwnerGroup) {
+      setError('Owner Group is required. Please select an Organization Unit.');
+      return;
+    }
+
+    if (!ownerGroups.some((group) => group.localeCompare(normalizedOwnerGroup, undefined, { sensitivity: 'base' }) === 0)) {
+      setError('Owner Group must be selected from Organization Unit list.');
+      return;
+    }
+
     try {
       const normalizedName = newModelName.trim();
-      const normalizedMetadata: DbmlProjectMetadata = {
+      const normalizedMetadata: DbmlProjectMetadata = sanitizeMetadataByDefinitions({
         ...newModelMetadata,
         databaseType: newModelMetadata.databaseType || 'PostgreSQL',
         description: newModelDescription.trim(),
         owner: newModelMetadata.owner || user.email,
+        ownerGroup: normalizedOwnerGroup,
         version: newModelMetadata.version || '1.0.0',
         lastUpdate: getTodayIsoDate(),
-      };
+      }, metadataFields);
+
+      const missingCustomRequired = metadataFields
+        .filter((field) => field.isActive && field.isRequired && !field.isSystem)
+        .find((field) => {
+          const key = field.fieldKey.trim().toLowerCase();
+          return !(normalizedMetadata.customFields[key] || '').trim();
+        });
+      if (missingCustomRequired) {
+        setError(`${missingCustomRequired.displayName} is required.`);
+        return;
+      }
+
       const initialDbml = buildProjectBlock(normalizedName, normalizedMetadata);
 
       const token = localStorage.getItem('token');
@@ -130,6 +226,7 @@ function ModelsContent() {
           description: newModelDescription,
           databaseDialect: normalizedMetadata.databaseType,
           initialDbml,
+          projectMetadata: toProjectMetadataPayload(normalizedMetadata),
         })
       });
 
@@ -142,6 +239,7 @@ function ModelsContent() {
       setNewModelDescription('');
       setNewModelMetadata(createDefaultProjectMetadata({
         owner: user.email,
+        ownerGroup: '',
         environment: 'Development',
       }));
       await fetchModels();
@@ -158,11 +256,29 @@ function ModelsContent() {
     }));
   }, [user?.email]);
 
+  useEffect(() => {
+    setNewModelMetadata((current) => {
+      const currentOwnerGroup = (current.ownerGroup || '').trim();
+      if (currentOwnerGroup.length > 0 && ownerGroups.some((group) => group.localeCompare(currentOwnerGroup, undefined, { sensitivity: 'base' }) === 0)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        ownerGroup: ownerGroups[0] || '',
+      };
+    });
+  }, [ownerGroups]);
+
   const handleMetadataFieldChange = (field: keyof DbmlProjectMetadata, value: string) => {
     setNewModelMetadata((current) => ({
       ...current,
       [field]: value,
     }));
+  };
+
+  const handleCustomMetadataFieldChange = (fieldKey: string, value: string) => {
+    setNewModelMetadata((current) => setMetadataFieldValue(current, fieldKey, value));
   };
 
   const handleDeleteModel = async (modelId: string, modelName: string) => {
@@ -207,9 +323,13 @@ function ModelsContent() {
 
   const groupedModels = useMemo(() => {
     const bucket: Record<string, ModelListDto[]> = {};
+    const ouLookup = new Set(ownerGroups.map((group) => group.toLowerCase()));
 
     for (const model of filteredModels) {
-      const groupName = model.modelGroupName ?? UNGROUPED_GROUP;
+      const modelGroupName = (model.modelGroupName || '').trim();
+      const groupName = modelGroupName && ouLookup.has(modelGroupName.toLowerCase())
+        ? modelGroupName
+        : UNGROUPED_GROUP;
       if (!bucket[groupName]) {
         bucket[groupName] = [];
       }
@@ -219,65 +339,61 @@ function ModelsContent() {
     const query = searchQuery.trim();
     const knownGroups = query.length > 0
       ? Object.keys(bucket)
-      : (groups.length > 0 ? groups.map((group) => group.name) : [UNGROUPED_GROUP]);
+      : [UNGROUPED_GROUP, ...ownerGroups];
     const allGroupNames = [...new Set([...knownGroups, ...Object.keys(bucket)])];
 
     return allGroupNames.map((groupName) => ({
       groupName,
       models: bucket[groupName] ?? []
     }));
-  }, [filteredModels, groups, searchQuery]);
+  }, [filteredModels, ownerGroups, searchQuery]);
 
   const isSearchMode = searchQuery.trim().length > 0;
 
-  const handleCreateGroup = async () => {
-    const name = newGroupName.trim();
-    if (!name) {
-      return;
-    }
 
-    if (groups.some((group) => group.name.toLowerCase() === name.toLowerCase())) {
-      setError('Bu isimde bir grup zaten mevcut');
-      return;
-    }
-
-    setCreatingGroup(true);
-    setError(null);
+  const handleAssignModelGroup = async (modelId: string, groupName: string) => {
     try {
+      const normalizedName = groupName.trim();
       const token = localStorage.getItem('token');
-      const response = await fetch(`${API_URL}/api/models/groups`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ name })
-      });
+      let groupId: string | null = null;
 
-      if (response.status === 409) {
-        setError('Bu isimde bir grup zaten mevcut');
-        return;
+      if (normalizedName.length > 0) {
+        const existing = groups.find((group) =>
+          !!group.id && group.name.localeCompare(normalizedName, undefined, { sensitivity: 'base' }) === 0);
+
+        if (existing?.id) {
+          groupId = existing.id;
+        } else {
+          const createResponse = await fetch(`${API_URL}/api/models/groups`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({ name: normalizedName })
+          });
+
+          if (createResponse.status === 409) {
+            const refreshResponse = await fetch(`${API_URL}/api/models/groups`, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (refreshResponse.ok) {
+              const refreshed = (await refreshResponse.json()) as ModelGroupDto[];
+              setGroups(refreshed);
+              const resolved = refreshed.find((group) =>
+                !!group.id && group.name.localeCompare(normalizedName, undefined, { sensitivity: 'base' }) === 0);
+              groupId = resolved?.id ?? null;
+            }
+          } else if (createResponse.ok) {
+            const created = await createResponse.json().catch(() => null) as ModelGroupDto | null;
+            groupId = created?.id ?? null;
+            await fetchGroups();
+          } else {
+            throw new Error('Failed to create model group');
+          }
+        }
       }
 
-      if (!response.ok) {
-        const message = await response.text().catch(() => '');
-        setError(`Grup oluşturma başarısız${message ? `: ${message}` : ''}`);
-        return;
-      }
-
-      await fetchGroups();
-      setExpandedGroup(name);
-      setNewGroupName('');
-    } catch {
-      setError('Grup oluşturulamadı. Bağlantınızı kontrol edin.');
-    } finally {
-      setCreatingGroup(false);
-    }
-  };
-
-  const handleAssignModelGroup = async (modelId: string, groupId: string | null) => {
-    try {
-      const token = localStorage.getItem('token');
       const response = await fetch(`${API_URL}/api/models/${modelId}/group`, {
         method: 'PUT',
         headers: {
@@ -291,13 +407,12 @@ function ModelsContent() {
         throw new Error('Failed to update model group');
       }
 
-      const selectedGroup = groups.find((group) => group.id === groupId);
       setModels((previous) => previous.map((model) =>
         model.id === modelId
           ? {
               ...model,
               modelGroupId: groupId,
-              modelGroupName: selectedGroup?.name ?? UNGROUPED_GROUP
+              modelGroupName: normalizedName || UNGROUPED_GROUP
             }
           : model
       ));
@@ -308,47 +423,6 @@ function ModelsContent() {
     }
   };
 
-  const handleDeleteGroup = async (group: ModelGroupDto) => {
-    if (!group.id) {
-      return;
-    }
-
-    if (!user?.isSuperAdmin) {
-      setError('Only admin users can delete groups');
-      return;
-    }
-
-    const confirmed = window.confirm(`Delete group "${group.name}"?`);
-    if (!confirmed) {
-      return;
-    }
-
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch(`${API_URL}/api/models/groups/${group.id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      if (response.status === 409) {
-        const message = await response.text().catch(() => 'Group has models and cannot be deleted.');
-        setError(message || 'Group has models and cannot be deleted.');
-        return;
-      }
-
-      if (!response.ok) {
-        throw new Error('Failed to delete group');
-      }
-
-      setError(null);
-      await fetchGroups();
-      await fetchModels();
-      setExpandedGroup(UNGROUPED_GROUP);
-    } catch {
-      setError('Failed to delete group');
-    }
-  };
-
   const getRoleBadgeClasses = (role: string) => {
     if (role === 'owner') return 'bg-indigo-100 text-indigo-700';
     if (role === 'editor') return 'bg-emerald-100 text-emerald-700';
@@ -356,125 +430,95 @@ function ModelsContent() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-100 via-slate-50 to-white">
-      {/* Header */}
-      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/90 backdrop-blur-lg shadow-sm">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-6 py-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <h1 className="text-4xl font-bold tracking-tight text-slate-900">Data Models</h1>
-            <p className="mt-1 text-sm text-slate-500">Design, maintain and collaborate on your data models.</p>
-            {lastSyncedAt && (
-              <p className="mt-1 text-xs text-slate-400">Last refresh: {lastSyncedAt.toLocaleTimeString()}</p>
+    <>
+    <AppShell
+      title="Data Models"
+      subtitle="Design, maintain and collaborate on governed model spaces."
+      currentArea="models"
+      userEmail={user?.email}
+      onLogout={() => {
+        logout();
+        router.push('/');
+      }}
+    >
+        <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+          <div className="flex flex-wrap items-center gap-2">
+            {user?.isSuperAdmin && (
+              <button
+                onClick={() => {
+                  setActiveQuickTab('add');
+                  setShowNewModal(true);
+                }}
+                className={`${getStandardTabClass(activeQuickTab === 'add')} min-w-[160px]`}
+              >
+                Add Model
+              </button>
             )}
-          </div>
 
-          <div className="flex items-start gap-3 self-end lg:self-auto">
             <button
-              onClick={() => setShowImportExportModal(true)}
-              className={`${secondaryButtonClass} min-w-[148px]`}
+              onClick={() => {
+                setActiveQuickTab('import');
+                openImportExportModal('import');
+              }}
+              className={`${getStandardTabClass(activeQuickTab === 'import')} min-w-[160px]`}
             >
-              Import / Export
+              Import Model
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveQuickTab('export');
+                openImportExportModal('export');
+              }}
+              className={`${getStandardTabClass(activeQuickTab === 'export')} min-w-[160px]`}
+            >
+              Export Model
             </button>
 
             {user?.isSuperAdmin && (
               <button
-                onClick={() => router.push('/admin')}
-                className={`${secondaryButtonClass} min-w-[148px]`}
+                onClick={() => {
+                  setActiveQuickTab('reverse');
+                  setShowReverseEngineModal(true);
+                }}
+                className={`${getStandardTabClass(activeQuickTab === 'reverse')} min-w-[160px]`}
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="opacity-90">
-                  <path d="M12 8a4 4 0 100 8 4 4 0 000-8zm9 4l-2.05-.68c-.12-.4-.28-.77-.49-1.12l.97-1.92-2.12-2.12-1.92.97c-.35-.21-.72-.37-1.12-.49L12 3 9.73 3.64c-.4.12-.77.28-1.12.49l-1.92-.97L4.57 5.28l.97 1.92c-.21.35-.37.72-.49 1.12L3 12l.64 2.27c.12.4.28.77.49 1.12l-.97 1.92 2.12 2.12 1.92-.97c.35.21.72.37 1.12.49L12 21l2.27-.64c.4-.12.77-.28 1.12-.49l1.92.97 2.12-2.12-.97-1.92c.21-.35.37-.72.49-1.12L21 12z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-                Admin Panel
+                Reverse Engine
               </button>
             )}
 
-            <div className="min-w-[220px] rounded-xl border border-slate-200 bg-white px-4 py-2.5 shadow-sm">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Signed in as</p>
-              <p className="text-sm font-medium text-slate-700 truncate">{user?.email}</p>
-              <button
-                onClick={() => {
-                  logout();
-                  router.push('/');
-                }}
-                className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-rose-600 transition hover:text-rose-700"
-              >
-                <span aria-hidden="true">↳</span>
-                Logout
-              </button>
-            </div>
           </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-6 py-8">
-        <div className="mb-8 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex-1">
-                <label htmlFor="model-search" className="sr-only">Search models</label>
-                <input
-                  id="model-search"
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search by model name, description or owner"
-                  className="h-11 w-full rounded-xl border border-slate-300 px-4 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                {user?.isSuperAdmin && (
-                  <button
-                    onClick={() => setShowNewModal(true)}
-                    className={`${primaryButtonClass} min-w-[148px]`}
-                  >
-                    Create Model
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <input
-                type="text"
-                value={newGroupName}
-                onChange={(e) => setNewGroupName(e.target.value)}
-                placeholder="Create logical group (e.g., Finance, CRM, Legacy)"
-                className="h-11 flex-1 rounded-xl border border-slate-300 px-4 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
-              />
-              <button
-                onClick={handleCreateGroup}
-                disabled={creatingGroup || !newGroupName.trim()}
-                className={`${primaryButtonClass} min-w-[124px]`}
-              >
-                {creatingGroup ? 'Oluşturuluyor…' : 'Grup Ekle'}
-              </button>
-            </div>
-          </div>
-        </div>
+        </section>
 
         {!user?.isSuperAdmin && (
-          <div className="mb-6 p-4 bg-blue-50 border border-blue-200 text-blue-700 rounded-lg">
+          <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 p-4 text-blue-700">
             New model creation is limited to admin users; developers can update models they are authorized for.
           </div>
         )}
 
         {error && (
-          <div className="mb-4 p-4 bg-red-50 border border-red-200 text-red-700 rounded-lg">
+          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4 text-red-700">
             {error}
           </div>
         )}
 
+        <section className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Model List</h2>
+            <span className="text-xs text-slate-400">{filteredModels.length} models</span>
+          </div>
+          <p className="mb-3 text-xs text-slate-500">Groups are synchronized from imported AD Organization Units</p>
+
         {loading ? (
           <div className="text-center py-12">Loading models...</div>
-        ) : filteredModels.length === 0 && groups.filter(g => g.id !== null).length === 0 ? (
-          <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-12 text-center">
+        ) : filteredModels.length === 0 && ownerGroups.length === 0 ? (
+          <div className="rounded-xl border border-slate-200 bg-white p-12 text-center">
             <p className="text-slate-500 text-lg mb-4">No models found</p>
             <p className="text-slate-400">
               {user?.isSuperAdmin
                 ? searchQuery
                   ? 'Try a different search query'
-                  : 'Click "Create Model" to get started'
+                  : 'Click "Add Model" to get started'
                 : 'Ask an admin to create a model and grant you access'}
             </p>
           </div>
@@ -482,11 +526,9 @@ function ModelsContent() {
           <div className="space-y-2">
             {groupedModels.map(({ groupName, models: groupItems }) => {
               const isExpanded = isSearchMode || expandedGroup === groupName;
-              const groupMeta = groups.find((group) => group.name === groupName);
-              const isDeletableGroup = !!groupMeta?.id;
 
               return (
-                <div key={groupName} className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div key={groupName} className="overflow-hidden rounded-xl border border-slate-200 bg-white">
                   <div className="w-full border-b border-slate-200 bg-slate-50 px-3 py-2">
                     <div className="flex items-center justify-between gap-2">
                     <button
@@ -502,17 +544,6 @@ function ModelsContent() {
                         {groupItems.length}
                       </span>
                     </button>
-
-                    {user?.isSuperAdmin && isDeletableGroup && (
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteGroup(groupMeta)}
-                        className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-100"
-                        title="Delete empty group"
-                      >
-                        Delete Group
-                      </button>
-                    )}
                     </div>
                   </div>
 
@@ -524,7 +555,7 @@ function ModelsContent() {
                         groupItems.map((model) => (
                           <div
                             key={model.id}
-                            onClick={() => router.push(`/models/${model.id}`)}
+                            onClick={() => router.push(`/designer?modelId=${model.id}&hideSelector=1`)}
                             className="relative pl-5 pr-3 py-2.5 cursor-pointer hover:bg-slate-50 transition rounded-lg border border-transparent hover:border-slate-200 before:absolute before:left-0 before:top-0 before:bottom-0 before:w-px before:bg-slate-200"
                           >
                             <span className="absolute left-0 top-1/2 -translate-y-1/2 h-px w-3 bg-slate-300" aria-hidden="true"></span>
@@ -538,30 +569,15 @@ function ModelsContent() {
 
                               <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                                 <select
-                                  value={model.modelGroupId ?? ''}
-                                  onChange={(e) => handleAssignModelGroup(model.id, e.target.value || null)}
-                                  className="text-xs px-2 py-1.5 border border-slate-300 rounded-lg bg-white"
+                                  value={ownerGroups.some((group) => group === model.modelGroupName) ? (model.modelGroupName || '') : ''}
+                                  onChange={(e) => handleAssignModelGroup(model.id, e.target.value)}
+                                  className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs"
                                 >
                                   <option value="">{UNGROUPED_GROUP}</option>
-                                  {groups
-                                    .filter((group) => group.id)
-                                    .map((group) => (
-                                      <option key={group.id} value={group.id ?? ''}>{group.name}</option>
-                                    ))}
+                                  {ownerGroups.map((group) => (
+                                    <option key={group} value={group}>{group}</option>
+                                  ))}
                                 </select>
-
-                                <span className={`inline-block px-2 py-1 text-[11px] rounded-full ${getRoleBadgeClasses(model.yourRole)}`}>
-                                  {model.yourRole}
-                                </span>
-
-                                {user?.isSuperAdmin && (
-                                  <button
-                                    onClick={() => handleDeleteModel(model.id, model.name)}
-                                    className="px-2 py-1 bg-red-100 text-red-700 text-[11px] rounded-full hover:bg-red-200 transition font-semibold"
-                                  >
-                                    Delete
-                                  </button>
-                                )}
                               </div>
                             </div>
                           </div>
@@ -580,12 +596,13 @@ function ModelsContent() {
             )}
           </div>
         )}
-      </main>
+        </section>
+    </AppShell>
 
       {/* New Model Modal */}
       {showNewModal && (
         <div className="fixed inset-0 bg-black/45 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-xl p-8 max-w-md w-full border border-slate-200">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-8 shadow-xl">
             <h2 className="text-2xl font-bold mb-2 text-slate-900">Create New Model</h2>
             <p className="text-sm text-slate-500 mb-6">Start with model metadata. A DBML Project block will be generated automatically.</p>
 
@@ -597,7 +614,7 @@ function ModelsContent() {
                   value={newModelName}
                   onChange={(e) => setNewModelName(e.target.value)}
                   placeholder="e.g., Customer Database"
-                  className="h-11 w-full rounded-xl border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="dm-input"
                 />
               </div>
 
@@ -608,7 +625,7 @@ function ModelsContent() {
                   onChange={(e) => setNewModelDescription(e.target.value)}
                   placeholder="Model scope and intent..."
                   rows={3}
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200"
                 />
               </div>
 
@@ -618,7 +635,7 @@ function ModelsContent() {
                   <select
                     value={newModelMetadata.databaseType}
                     onChange={(e) => handleMetadataFieldChange('databaseType', e.target.value)}
-                    className="h-11 w-full rounded-xl border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="dm-select"
                   >
                     <option value="PostgreSQL">PostgreSQL</option>
                     <option value="MySQL">MySQL</option>
@@ -633,7 +650,7 @@ function ModelsContent() {
                   <select
                     value={newModelMetadata.environment}
                     onChange={(e) => handleMetadataFieldChange('environment', e.target.value as ProjectEnvironment)}
-                    className="h-11 w-full rounded-xl border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="dm-select"
                   >
                     <option value="Development">Development</option>
                     <option value="Test">Test</option>
@@ -643,13 +660,30 @@ function ModelsContent() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Owner</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Owner User</label>
                   <input
                     type="text"
                     value={newModelMetadata.owner}
                     onChange={(e) => handleMetadataFieldChange('owner', e.target.value)}
-                    className="h-11 w-full rounded-xl border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="dm-input"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Owner Group*</label>
+                  <select
+                    value={newModelMetadata.ownerGroup || ''}
+                    onChange={(e) => handleMetadataFieldChange('ownerGroup', e.target.value)}
+                    className="dm-select"
+                  >
+                    <option value="">Select Organization Unit</option>
+                    {ownerGroups.map((group) => (
+                      <option key={group} value={group}>{group}</option>
+                    ))}
+                  </select>
+                  {ownerGroups.length === 0 && (
+                    <p className="mt-1 text-xs text-amber-700">No Organization Unit found from imported LDAP users.</p>
+                  )}
                 </div>
 
                 <div>
@@ -659,7 +693,7 @@ function ModelsContent() {
                     value={newModelMetadata.version}
                     onChange={(e) => handleMetadataFieldChange('version', e.target.value)}
                     placeholder="1.0.0"
-                    className="h-11 w-full rounded-xl border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="dm-input"
                   />
                 </div>
 
@@ -669,21 +703,49 @@ function ModelsContent() {
                     type="email"
                     value={newModelMetadata.contact}
                     onChange={(e) => handleMetadataFieldChange('contact', e.target.value)}
-                    placeholder="data-team@sirket.com"
-                    className="h-11 w-full rounded-xl border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="data-team@company.com"
+                    className="dm-input"
                   />
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Business Domain</label>
-                  <input
-                    type="text"
-                    value={newModelMetadata.businessDomain}
-                    onChange={(e) => handleMetadataFieldChange('businessDomain', e.target.value)}
-                    placeholder="finance"
-                    className="h-11 w-full rounded-xl border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
+                {metadataFields
+                  .filter((field) => field.isActive && !field.isSystem)
+                  .map((field) => {
+                    const fieldValue = (newModelMetadata.customFields[field.fieldKey] || '');
+                    return (
+                      <div key={field.fieldKey} className="sm:col-span-2">
+                        <label className="block text-sm font-medium text-slate-700 mb-1">
+                          {field.displayName}{field.isRequired ? '*' : ''}
+                        </label>
+                        {field.fieldType === 'textarea' ? (
+                          <textarea
+                            value={fieldValue}
+                            onChange={(e) => handleCustomMetadataFieldChange(field.fieldKey, e.target.value)}
+                            rows={2}
+                            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                          />
+                        ) : field.fieldType === 'select' ? (
+                          <select
+                            value={fieldValue}
+                            onChange={(e) => handleCustomMetadataFieldChange(field.fieldKey, e.target.value)}
+                            className="dm-select"
+                          >
+                            <option value="">Select...</option>
+                            {(field.options || []).map((option) => (
+                              <option key={option} value={option}>{option}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type="text"
+                            value={fieldValue}
+                            onChange={(e) => handleCustomMetadataFieldChange(field.fieldKey, e.target.value)}
+                            className="dm-input"
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
               </div>
 
             </div>
@@ -691,13 +753,14 @@ function ModelsContent() {
             <div className="flex gap-3 mt-6">
               <button
                 onClick={() => setShowNewModal(false)}
-                className="flex-1 h-11 rounded-xl border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                className="dm-btn-secondary flex-1"
               >
                 Cancel
               </button>
               <button
                 onClick={handleCreateModel}
-                className="flex-1 h-11 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700"
+                disabled={!newModelName.trim() || ownerGroups.length === 0 || !(newModelMetadata.ownerGroup || '').trim()}
+                className="dm-btn-primary flex-1"
               >
                 Create
               </button>
@@ -708,14 +771,25 @@ function ModelsContent() {
 
       <ImportExportModal
         isOpen={showImportExportModal}
+        defaultTab={importExportDefaultTab}
         onClose={() => setShowImportExportModal(false)}
         models={models}
         canImport={!!user?.isSuperAdmin}
         currentUserEmail={user?.email}
+        ownerGroups={ownerGroups}
         onImported={syncData}
         onError={setError}
       />
-    </div>
+
+      <ReverseEngineModal
+        isOpen={showReverseEngineModal}
+        onClose={() => setShowReverseEngineModal(false)}
+        onImported={syncData}
+        onError={setError}
+        currentUserEmail={user?.email}
+        ownerGroups={ownerGroups}
+      />
+    </>
   );
 }
 

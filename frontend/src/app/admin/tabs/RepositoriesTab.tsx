@@ -1,148 +1,449 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080').replace(/\/$/, '').replace(/\/api$/, '');
 
-interface Repository {
+type DevopsSettings = {
+  isConfigured: boolean;
+  isEnabled: boolean;
+  hasPersonalAccessToken: boolean;
+  serverUrl?: string | null;
+  collectionName?: string | null;
+};
+
+type ModelItem = {
   id: string;
   name: string;
-  isDefault: boolean;
-  createdAt: string;
-}
+};
+
+type RepositoryMapping = {
+  id: string;
+  modelId: string;
+  modelName: string;
+  projectName: string;
+  repositoryName: string;
+  branchName: string;
+  filePath: string;
+  isEnabled: boolean;
+  updatedAt: string;
+};
 
 export function RepositoriesTab() {
-  const [repositories, setRepositories] = useState<Repository[]>([]);
+  const [settings, setSettings] = useState<DevopsSettings | null>(null);
+  const [models, setModels] = useState<ModelItem[]>([]);
+  const [mappings, setMappings] = useState<RepositoryMapping[]>([]);
   const [loading, setLoading] = useState(true);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [savingMapping, setSavingMapping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [showForm, setShowForm] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [formData, setFormData] = useState({
+  const [showPatInput, setShowPatInput] = useState(false);
+
+  const [settingsForm, setSettingsForm] = useState({
+    isEnabled: true,
     serverUrl: '',
-    personalAccessToken: ''
+    collectionName: '',
+    personalAccessToken: '',
   });
 
-  const panelClass = 'bg-slate-50 border border-slate-200 rounded-xl p-5';
-  const inputClass = 'w-full px-3 py-2.5 bg-white border border-slate-300 rounded-lg text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400';
+  const [mappingForm, setMappingForm] = useState({
+    modelId: '',
+    projectName: '',
+    repositoryName: '',
+    branchName: 'main',
+    filePath: '/models/model.dbml',
+    isEnabled: true,
+  });
+
+  const panelClass = 'dm-panel p-5';
+  const inputClass = 'dm-input';
 
   useEffect(() => {
-    fetchRepositories();
+    void loadAll();
   }, []);
 
-  const fetchRepositories = async () => {
+  const authHeaders = () => {
+    const token = localStorage.getItem('token');
+    return {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    };
+  };
+
+  const normalizeDefaultFilePath = (value: string, modelName?: string) => {
+    if (value.trim().length > 0) {
+      return value.startsWith('/') ? value : `/${value}`;
+    }
+
+    const safeName = (modelName || 'model')
+      .toLowerCase()
+      .replace(/[^a-z0-9_\-]/g, '_');
+    return `/models/${safeName}.dbml`;
+  };
+
+  const loadAll = async () => {
+    setLoading(true);
+    setError(null);
+
     try {
-      const token = localStorage.getItem('auth-token');
-      const response = await fetch(`${API_URL}/api/admin/repositories`, {
-        headers: { 'Authorization': `Bearer ${token}` }
+      const [settingsRes, mappingsRes, modelsRes] = await Promise.all([
+        fetch(`${API_URL}/api/admin/settings/devops`, { headers: authHeaders() }),
+        fetch(`${API_URL}/api/admin/settings/devops/repository-mappings`, { headers: authHeaders() }),
+        fetch(`${API_URL}/api/models`, { headers: authHeaders() }),
+      ]);
+
+      if (!settingsRes.ok || !mappingsRes.ok || !modelsRes.ok) {
+        throw new Error('Failed to load DevOps admin data.');
+      }
+
+      const settingsData = (await settingsRes.json()) as DevopsSettings;
+      const mappingsData = (await mappingsRes.json()) as RepositoryMapping[];
+      const modelsData = (await modelsRes.json()) as ModelItem[];
+
+      setSettings(settingsData);
+      setMappings(mappingsData || []);
+      setModels((modelsData || []).slice().sort((a, b) => a.name.localeCompare(b.name)));
+
+      setSettingsForm({
+        isEnabled: settingsData?.isEnabled ?? true,
+        serverUrl: settingsData?.serverUrl || '',
+        collectionName: settingsData?.collectionName || '',
+        personalAccessToken: '',
       });
-      const data = await response.json();
-      setRepositories(data);
-      setLoading(false);
-    } catch (err) {
-      setError('Failed to load repositories');
+
+      if ((modelsData || []).length > 0) {
+        const firstModel = modelsData[0];
+        setMappingForm((current) => ({
+          ...current,
+          modelId: current.modelId || firstModel.id,
+          filePath: current.filePath || normalizeDefaultFilePath('', firstModel.name),
+        }));
+      }
+    } catch {
+      setError('Failed to load DevOps settings and mappings.');
+    } finally {
       setLoading(false);
     }
   };
 
-  const handleTestConnection = async () => {
-    if (!formData.serverUrl || !formData.personalAccessToken) {
-      setError('Please fill in all fields');
+  const handleSaveSettings = async () => {
+    if (!settingsForm.serverUrl.trim()) {
+      setError('Server URL is required.');
       return;
     }
 
-    setTesting(true);
+    setSavingSettings(true);
     setError(null);
     setSuccess(null);
 
     try {
-      const token = localStorage.getItem('auth-token');
-      const response = await fetch(`${API_URL}/api/admin/repositories/test`, {
+      const response = await fetch(`${API_URL}/api/admin/settings/devops`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
+        headers: authHeaders(),
         body: JSON.stringify({
-          serverUrl: formData.serverUrl,
-          personalAccessToken: formData.personalAccessToken
-        })
+          serverUrl: settingsForm.serverUrl.trim(),
+          collectionName: settingsForm.collectionName.trim(),
+          personalAccessToken: settingsForm.personalAccessToken.trim() || null,
+          isEnabled: settingsForm.isEnabled,
+        }),
       });
 
       const data = await response.json();
       if (data.success) {
-        setSuccess('Repository connection successful!');
-        setTimeout(() => {
-          setShowForm(false);
-          setFormData({ serverUrl: '', personalAccessToken: '' });
-        }, 2000);
+        setShowPatInput(false);
+        setSettingsForm((current) => ({ ...current, personalAccessToken: '' }));
+        await loadAll();
+        setSuccess('DevOps settings saved successfully.');
       } else {
-        setError(data.message || 'Connection test failed');
+        setError(data.message || 'Failed to save DevOps settings.');
       }
-    } catch (err) {
-      setError('Error testing repository connection');
+    } catch {
+      setError('Error while saving DevOps settings.');
     } finally {
-      setTesting(false);
+      setSavingSettings(false);
+    }
+  };
+
+  const handleModelChange = (modelId: string) => {
+    const selectedModel = models.find((m) => m.id === modelId);
+    setMappingForm((current) => ({
+      ...current,
+      modelId,
+      filePath: normalizeDefaultFilePath(current.filePath, selectedModel?.name),
+    }));
+  };
+
+  const handleSaveMapping = async () => {
+    if (!mappingForm.modelId) {
+      setError('Please select a model.');
+      return;
+    }
+
+    if (!mappingForm.projectName.trim() || !mappingForm.repositoryName.trim()) {
+      setError('Project name and repository name are required.');
+      return;
+    }
+
+    setSavingMapping(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const selectedModel = models.find((m) => m.id === mappingForm.modelId);
+      const response = await fetch(`${API_URL}/api/admin/settings/devops/repository-mappings`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          modelId: mappingForm.modelId,
+          projectName: mappingForm.projectName.trim(),
+          repositoryName: mappingForm.repositoryName.trim(),
+          branchName: mappingForm.branchName.trim() || 'main',
+          filePath: normalizeDefaultFilePath(mappingForm.filePath, selectedModel?.name),
+          isEnabled: mappingForm.isEnabled,
+        }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        await loadAll();
+        setSuccess('Repository mapping saved successfully.');
+      } else {
+        setError(data.message || 'Failed to save repository mapping.');
+      }
+    } catch {
+      setError('Error while saving repository mapping.');
+    } finally {
+      setSavingMapping(false);
+    }
+  };
+
+  const handleDeleteMapping = async (modelId: string) => {
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const response = await fetch(`${API_URL}/api/admin/settings/devops/repository-mappings/${modelId}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        await loadAll();
+        setSuccess('Repository mapping deleted successfully.');
+      } else {
+        setError(data.message || 'Failed to delete repository mapping.');
+      }
+    } catch {
+      setError('Error while deleting repository mapping.');
     }
   };
 
   if (loading) {
-    return <div className="text-center py-8 text-slate-500">Loading repositories...</div>;
+    return <div className="py-8 text-center text-slate-500">Loading DevOps configuration...</div>;
   }
 
   return (
     <div className="space-y-6">
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-red-700">
           {error}
         </div>
       )}
 
       {success && (
-        <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 px-4 py-3 rounded-lg">
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-emerald-700">
           {success}
         </div>
       )}
 
-      {/* Repositories List */}
       <div className={panelClass}>
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-lg font-semibold text-slate-900">Azure DevOps Repositories</h3>
-          <button
-            onClick={() => setShowForm(!showForm)}
-            className="px-4 py-2.5 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-500 transition-colors"
-          >
-            {showForm ? 'Cancel' : '+ Add Connection'}
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h3 className="text-lg font-semibold text-slate-900">Azure DevOps Settings</h3>
+          <button onClick={() => void loadAll()} className="dm-btn-secondary">
+            Refresh
           </button>
         </div>
 
-        {repositories.length === 0 ? (
-          <div className="text-center py-8 text-slate-500">
-            <p className="mb-4">No repository connections configured</p>
-            <p className="text-sm">Add a connection to integrate with Azure DevOps</p>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Server URL</label>
+            <input
+              type="text"
+              value={settingsForm.serverUrl}
+              onChange={(e) => setSettingsForm({ ...settingsForm, serverUrl: e.target.value })}
+              placeholder="https://dev.azure.com/yourorg"
+              className={inputClass}
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Collection Name (optional)</label>
+            <input
+              type="text"
+              value={settingsForm.collectionName}
+              onChange={(e) => setSettingsForm({ ...settingsForm, collectionName: e.target.value })}
+              placeholder="DefaultCollection"
+              className={inputClass}
+            />
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="mb-1 block text-sm font-medium text-slate-700">Personal Access Token</label>
+            {!showPatInput ? (
+              <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+                <span>
+                  {settings?.hasPersonalAccessToken ? 'PAT already configured.' : 'No PAT configured yet.'}
+                </span>
+                <button type="button" className="dm-btn-secondary" onClick={() => setShowPatInput(true)}>
+                  {settings?.hasPersonalAccessToken ? 'Replace PAT' : 'Add PAT'}
+                </button>
+              </div>
+            ) : (
+              <input
+                type="password"
+                value={settingsForm.personalAccessToken}
+                onChange={(e) => setSettingsForm({ ...settingsForm, personalAccessToken: e.target.value })}
+                placeholder="Paste new PAT token"
+                className={inputClass}
+              />
+            )}
+          </div>
+
+          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={settingsForm.isEnabled}
+              onChange={(e) => setSettingsForm({ ...settingsForm, isEnabled: e.target.checked })}
+            />
+            Enable DevOps archive integration
+          </label>
+
+          <div className="md:col-span-2">
+            <button onClick={handleSaveSettings} disabled={savingSettings} className="dm-btn-primary">
+              {savingSettings ? 'Saving...' : 'Save DevOps Settings'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className={panelClass}>
+        <h3 className="mb-4 text-lg font-semibold text-slate-900">Model to Repository Mapping</h3>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Model</label>
+            <select value={mappingForm.modelId} onChange={(e) => handleModelChange(e.target.value)} className="dm-select">
+              <option value="">Select model</option>
+              {models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Project Name</label>
+            <input
+              type="text"
+              value={mappingForm.projectName}
+              onChange={(e) => setMappingForm({ ...mappingForm, projectName: e.target.value })}
+              placeholder="Azure DevOps project"
+              className={inputClass}
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Repository Name</label>
+            <input
+              type="text"
+              value={mappingForm.repositoryName}
+              onChange={(e) => setMappingForm({ ...mappingForm, repositoryName: e.target.value })}
+              placeholder="Repository"
+              className={inputClass}
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-medium text-slate-700">Branch</label>
+            <input
+              type="text"
+              value={mappingForm.branchName}
+              onChange={(e) => setMappingForm({ ...mappingForm, branchName: e.target.value })}
+              placeholder="main"
+              className={inputClass}
+            />
+          </div>
+
+          <div className="xl:col-span-2">
+            <label className="mb-1 block text-sm font-medium text-slate-700">DBML File Path</label>
+            <input
+              type="text"
+              value={mappingForm.filePath}
+              onChange={(e) => setMappingForm({ ...mappingForm, filePath: e.target.value })}
+              placeholder="/models/model.dbml"
+              className={inputClass}
+            />
+          </div>
+
+          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={mappingForm.isEnabled}
+              onChange={(e) => setMappingForm({ ...mappingForm, isEnabled: e.target.checked })}
+            />
+            Mapping enabled
+          </label>
+
+          <div className="md:col-span-2 xl:col-span-3">
+            <button onClick={handleSaveMapping} disabled={savingMapping} className="dm-btn-primary">
+              {savingMapping ? 'Saving...' : 'Save Mapping'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className={panelClass}>
+        <h3 className="mb-4 text-lg font-semibold text-slate-900">Current Mappings</h3>
+
+        {mappings.length === 0 ? (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+            No repository mappings configured.
           </div>
         ) : (
-          <div className="space-y-4">
-            {repositories.map(repo => (
-              <div key={repo.id} className="flex items-center justify-between p-4 bg-white rounded-lg border border-slate-200">
-                <div>
-                  <h4 className="font-medium text-slate-900">{repo.name}</h4>
-                  <p className="text-sm text-slate-500">
-                    Created: {new Date(repo.createdAt).toLocaleDateString()}
-                  </p>
-                </div>
-                <div className="flex items-center gap-4">
-                  {repo.isDefault && (
-                    <span className="inline-block px-3 py-1 bg-emerald-100 text-emerald-700 text-xs rounded-full">
-                      Default
+          <div className="space-y-3">
+            {mappings.map((mapping) => (
+              <div key={mapping.id} className="rounded-lg border border-slate-200 bg-white p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">{mapping.modelName}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {mapping.projectName} / {mapping.repositoryName} / {mapping.branchName}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">{mapping.filePath}</p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Updated: {new Date(mapping.updatedAt).toLocaleString()}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                        mapping.isEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
+                      }`}
+                    >
+                      {mapping.isEnabled ? 'Enabled' : 'Disabled'}
                     </span>
-                  )}
-                  <button
-                    className="text-slate-400 hover:text-slate-600 transition-colors"
-                    title="Delete"
-                  >
-                    Delete
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteMapping(mapping.modelId)}
+                      className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -150,73 +451,16 @@ export function RepositoriesTab() {
         )}
       </div>
 
-      {/* Add Connection Form */}
-      {showForm && (
-        <div className={panelClass}>
-          <h3 className="text-lg font-semibold text-slate-900 mb-4">Add Azure DevOps Connection</h3>
-
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">Server URL</label>
-              <input
-                type="text"
-                value={formData.serverUrl}
-                onChange={(e) => setFormData({ ...formData, serverUrl: e.target.value })}
-                placeholder="https://dev.azure.com/yourorg"
-                className={inputClass}
-              />
-              <p className="text-xs text-slate-500 mt-1">Example: https://dev.azure.com/contoso</p>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">Personal Access Token</label>
-              <input
-                type="password"
-                value={formData.personalAccessToken}
-                onChange={(e) => setFormData({ ...formData, personalAccessToken: e.target.value })}
-                placeholder="Your PAT token"
-                className={inputClass}
-              />
-              <p className="text-xs text-slate-500 mt-1">
-                Generate a PAT from Azure DevOps with code read/write permissions
-              </p>
-            </div>
-
-            <div className="bg-indigo-50 border border-indigo-200 p-4 rounded-lg text-sm text-indigo-700">
-              <p className="font-medium mb-2">Security Note</p>
-              <p>Your Personal Access Token will be encrypted and stored securely. It won't be shown again after saving.</p>
-            </div>
-
-            <div className="flex gap-4">
-              <button
-                onClick={handleTestConnection}
-                disabled={testing}
-                className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-500 disabled:bg-slate-400 transition-colors"
-              >
-                {testing ? 'Testing...' : 'Test Connection'}
-              </button>
-              <button
-                onClick={() => setShowForm(false)}
-                className="px-6 py-2.5 bg-slate-200 text-slate-800 font-medium rounded-lg hover:bg-slate-300 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Info Box */}
-      <div className="bg-indigo-50 border border-indigo-200 p-6 rounded-xl">
-        <h4 className="font-semibold text-indigo-900 mb-2">DevOps Integration</h4>
-        <p className="text-indigo-700 text-sm mb-3">
-          Configure Azure DevOps repositories for version control integration. In Phase 5, your data models will be automatically synchronized with your repository.
+      <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-6">
+        <h4 className="mb-2 font-semibold text-indigo-900">Archive Flow Status</h4>
+        <p className="mb-3 text-sm text-indigo-700">
+          Approved Change Requests are archived to Azure DevOps when both settings and model mapping are enabled.
         </p>
-        <ul className="text-indigo-700 text-sm space-y-1 list-disc list-inside">
-          <li>Model versioning and change history</li>
-          <li>Commit models to repository</li>
-          <li>Collaboration and code review</li>
-          <li>Integration with CI/CD pipelines</li>
+        <ul className="list-inside list-disc space-y-1 text-sm text-indigo-700">
+          <li>DevOps settings enabled + PAT configured</li>
+          <li>Model has enabled mapping to project/repository/branch/file</li>
+          <li>Approve request in Change Requests module</li>
+          <li>System commits DBML + SQL archive files to mapped repository</li>
         </ul>
       </div>
     </div>
