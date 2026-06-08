@@ -219,6 +219,9 @@ public class ChangeRequestService : IChangeRequestService
         var query = _context.ChangeRequests
             .AsNoTracking()
             .Include(c => c.Model)
+                .ThenInclude(m => m!.ModelGroup)
+            .Include(c => c.Model)
+                .ThenInclude(m => m!.Collaborators)
             .Include(c => c.Requester)
             .Include(c => c.ApprovalLogs)
             .AsQueryable();
@@ -273,10 +276,14 @@ public class ChangeRequestService : IChangeRequestService
         {
             if (!isAdmin)
             {
+                var userOrganizationUnit = ExtractOrganizationUnit(actor.LdapDistinguishedName);
                 items = items.Where(c =>
                         visibleModelIds.Contains(c.ModelId) &&
-                        CanUserSeePendingByRole(c.Status, roleNames, false) &&
-                        CanUserApproveCurrentStage(c, roleNames, false))
+                        c.Model != null &&
+                        CanUserApproveCurrentStage(
+                            c,
+                            ResolveEffectiveRoleForModel(c.Model, actorUserId, actor.IsSuperAdmin, userOrganizationUnit, roleNames),
+                            actor.IsSuperAdmin))
                     .ToList();
             }
         }
@@ -306,6 +313,7 @@ public class ChangeRequestService : IChangeRequestService
         }
 
         var roleNames = await GetUserRoleNamesAsync(userId, cancellationToken);
+        var userOrganizationUnit = ExtractOrganizationUnit(user.LdapDistinguishedName);
 
         var requests = await _context.ChangeRequests
             .AsNoTracking()
@@ -325,12 +333,8 @@ public class ChangeRequestService : IChangeRequestService
                 continue;
             }
 
-            if (!CanUserSeePendingByRole(request.Status, roleNames, user.IsSuperAdmin))
-            {
-                continue;
-            }
-
-            if (!CanUserApproveCurrentStage(request, roleNames, user.IsSuperAdmin))
+            var effectiveRole = ResolveEffectiveRoleForModel(request.Model, userId, user.IsSuperAdmin, userOrganizationUnit, roleNames);
+            if (!CanUserApproveCurrentStage(request, effectiveRole, user.IsSuperAdmin))
             {
                 continue;
             }
@@ -391,6 +395,9 @@ public class ChangeRequestService : IChangeRequestService
         var request = await _context.ChangeRequests
             .AsNoTracking()
             .Include(c => c.Model)
+                .ThenInclude(m => m!.ModelGroup)
+            .Include(c => c.Model)
+                .ThenInclude(m => m!.Collaborators)
             .Include(c => c.Requester)
             .Include(c => c.Details)
             .Include(c => c.ApprovalLogs)
@@ -419,7 +426,11 @@ public class ChangeRequestService : IChangeRequestService
                 canSubmit = request.Status == ChangeRequestStatuses.Draft && request.RequesterId == actorUserId.Value;
 
                 var roleNames = await GetUserRoleNamesAsync(actorUserId.Value, cancellationToken);
-                var canActOnCurrentStage = CanUserApproveCurrentStage(request, roleNames, actor.IsSuperAdmin);
+                var userOrganizationUnit = ExtractOrganizationUnit(actor.LdapDistinguishedName);
+                var effectiveRole = request.Model == null
+                    ? null
+                    : ResolveEffectiveRoleForModel(request.Model, actorUserId.Value, actor.IsSuperAdmin, userOrganizationUnit, roleNames);
+                var canActOnCurrentStage = CanUserApproveCurrentStage(request, effectiveRole, actor.IsSuperAdmin);
                 canApprove = canActOnCurrentStage;
                 canReject = canActOnCurrentStage;
             }
@@ -499,6 +510,9 @@ public class ChangeRequestService : IChangeRequestService
         var request = await _context.ChangeRequests
             .Include(c => c.Details)
             .Include(c => c.Model)
+                .ThenInclude(m => m!.ModelGroup)
+            .Include(c => c.Model)
+                .ThenInclude(m => m!.Collaborators)
             .FirstOrDefaultAsync(c => c.Id == requestId, cancellationToken);
 
         if (request == null)
@@ -515,8 +529,12 @@ public class ChangeRequestService : IChangeRequestService
             ?? throw new InvalidOperationException("Actor not found.");
 
         var roleNames = await GetUserRoleNamesAsync(actorUserId, cancellationToken);
+        var userOrganizationUnit = ExtractOrganizationUnit(actor.LdapDistinguishedName);
+        var effectiveRole = request.Model == null
+            ? null
+            : ResolveEffectiveRoleForModel(request.Model, actorUserId, actor.IsSuperAdmin, userOrganizationUnit, roleNames);
         var workflow = DeserializeWorkflow(request.WorkflowStagesJson);
-        if (!CanUserApproveCurrentStage(request, roleNames, actor.IsSuperAdmin))
+        if (!CanUserApproveCurrentStage(request, effectiveRole, actor.IsSuperAdmin))
         {
             throw new InvalidOperationException("User is not allowed to approve current workflow stage.");
         }
@@ -556,6 +574,10 @@ public class ChangeRequestService : IChangeRequestService
     public async Task<ChangeRequestDetailDto?> RejectAsync(Guid requestId, Guid actorUserId, string? comment, CancellationToken cancellationToken = default)
     {
         var request = await _context.ChangeRequests
+            .Include(c => c.Model)
+                .ThenInclude(m => m!.ModelGroup)
+            .Include(c => c.Model)
+                .ThenInclude(m => m!.Collaborators)
             .FirstOrDefaultAsync(c => c.Id == requestId, cancellationToken);
 
         if (request == null)
@@ -567,7 +589,11 @@ public class ChangeRequestService : IChangeRequestService
             ?? throw new InvalidOperationException("Actor not found.");
 
         var roleNames = await GetUserRoleNamesAsync(actorUserId, cancellationToken);
-        if (!CanUserApproveCurrentStage(request, roleNames, actor.IsSuperAdmin))
+        var userOrganizationUnit = ExtractOrganizationUnit(actor.LdapDistinguishedName);
+        var effectiveRole = request.Model == null
+            ? null
+            : ResolveEffectiveRoleForModel(request.Model, actorUserId, actor.IsSuperAdmin, userOrganizationUnit, roleNames);
+        if (!CanUserApproveCurrentStage(request, effectiveRole, actor.IsSuperAdmin))
         {
             throw new InvalidOperationException("User is not allowed to reject current workflow stage.");
         }
@@ -825,9 +851,19 @@ public class ChangeRequestService : IChangeRequestService
         }
     }
 
-    private bool CanUserApproveCurrentStage(ChangeRequest request, HashSet<string> roleNames, bool isSuperAdmin)
+    private bool CanUserApproveCurrentStage(ChangeRequest request, string? effectiveRole, bool isSuperAdmin)
     {
         if (isSuperAdmin)
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(effectiveRole))
+        {
+            return false;
+        }
+
+        if (string.Equals(effectiveRole, "admin", StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
@@ -845,7 +881,10 @@ public class ChangeRequestService : IChangeRequestService
         }
 
         var requiredRole = workflow[stageIndex].RequiredRole.Trim().ToLowerInvariant();
-        return DoesRoleMatchRequiredRole(requiredRole, roleNames);
+        return DoesRoleMatchRequiredRole(requiredRole, new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            effectiveRole.Trim().ToLowerInvariant()
+        });
     }
 
     private static bool DoesRoleMatchRequiredRole(string requiredRole, ISet<string> roleNames)
@@ -927,6 +966,65 @@ public class ChangeRequestService : IChangeRequestService
         return (value ?? string.Empty).Trim().ToLowerInvariant();
     }
 
+    private static string NormalizeRoleName(string? roleName)
+    {
+        var normalized = (roleName ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "business_domain_architect" => "domain_architect",
+            "business-architect" => "domain_architect",
+            "business_architect" => "domain_architect",
+            _ => normalized,
+        };
+    }
+
+    private static bool OuMatchesModelGroup(string userOrganizationUnit, string? modelGroupName)
+    {
+        var normalizedUserOu = NormalizeOuKey(userOrganizationUnit);
+        var normalizedModelOu = NormalizeOuKey(modelGroupName);
+        if (string.IsNullOrWhiteSpace(normalizedUserOu) || string.IsNullOrWhiteSpace(normalizedModelOu))
+        {
+            return false;
+        }
+
+        var userOuParts = normalizedUserOu.Split('/').Select(part => part.Trim()).ToList();
+        var modelOuParts = normalizedModelOu.Split('/').Select(part => part.Trim()).ToList();
+
+        return modelOuParts.All(modelPart =>
+            userOuParts.Any(userPart => userPart.Equals(modelPart, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static bool IsGloballyScopedRole(string normalizedRole)
+    {
+        return normalizedRole == "admin" || normalizedRole == "data_architect";
+    }
+
+    private static string? ApplyOuPolicyToRole(
+        string? candidateRole,
+        string userOrganizationUnit,
+        string? modelGroupName)
+    {
+        var normalizedRole = NormalizeRoleName(candidateRole);
+        if (string.IsNullOrWhiteSpace(normalizedRole))
+        {
+            return null;
+        }
+
+        if (normalizedRole == "owner")
+        {
+            return normalizedRole;
+        }
+
+        if (IsGloballyScopedRole(normalizedRole))
+        {
+            return normalizedRole;
+        }
+
+        return OuMatchesModelGroup(userOrganizationUnit, modelGroupName)
+            ? normalizedRole
+            : null;
+    }
+
     private static string? ResolveGlobalDefaultRole(ISet<string> userApplicationRoles)
     {
         foreach (var roleName in GlobalDefaultModelRolesByPriority)
@@ -956,22 +1054,24 @@ public class ChangeRequestService : IChangeRequestService
             return globalDefaultRole;
         }
 
-        var normalizedUserOu = NormalizeOuKey(userOrganizationUnit);
-        var normalizedModelOu = NormalizeOuKey(modelGroupName);
-        if (string.IsNullOrWhiteSpace(normalizedUserOu) || string.IsNullOrWhiteSpace(normalizedModelOu))
+        // Data architects are globally scoped across models.
+        if (userApplicationRoles.Contains("data_architect"))
+        {
+            return "data_architect";
+        }
+
+        if (!OuMatchesModelGroup(userOrganizationUnit, modelGroupName))
         {
             return null;
         }
 
-        var userOuParts = normalizedUserOu.Split('/').Select(part => part.Trim()).ToList();
-        var modelOuParts = normalizedModelOu.Split('/').Select(part => part.Trim()).ToList();
-
-        var ouMatches = modelOuParts.All(modelPart =>
-            userOuParts.Any(userPart => userPart.Equals(modelPart, StringComparison.OrdinalIgnoreCase)));
-
-        if (!ouMatches)
+        // Domain architects are scoped by matching Organization Unit.
+        if (userApplicationRoles.Contains("domain_architect")
+            || userApplicationRoles.Contains("business_domain_architect")
+            || userApplicationRoles.Contains("business-architect")
+            || userApplicationRoles.Contains("business_architect"))
         {
-            return null;
+            return "domain_architect";
         }
 
         foreach (var roleName in ModelScopedApplicationRolesByPriority)
@@ -1007,10 +1107,11 @@ public class ChangeRequestService : IChangeRequestService
 
         if (explicitCollaboration != null)
         {
-            return explicitCollaboration.Role;
+            return ApplyOuPolicyToRole(explicitCollaboration.Role, userOrganizationUnit, model.ModelGroup?.Name);
         }
 
-        return ResolveDefaultRoleFromOu(userOrganizationUnit, model.ModelGroup?.Name, userApplicationRoles);
+        var defaultRole = ResolveDefaultRoleFromOu(userOrganizationUnit, model.ModelGroup?.Name, userApplicationRoles);
+        return ApplyOuPolicyToRole(defaultRole, userOrganizationUnit, model.ModelGroup?.Name);
     }
 
     private async Task<bool> CanAccessModelAsync(Guid userId, Model model, string minimumRole, CancellationToken cancellationToken)

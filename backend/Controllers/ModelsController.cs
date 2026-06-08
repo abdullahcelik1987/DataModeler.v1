@@ -94,6 +94,65 @@ public class ModelsController : ControllerBase
         return (value ?? string.Empty).Trim().ToLowerInvariant();
     }
 
+    private static string NormalizeRoleName(string? roleName)
+    {
+        var normalized = (roleName ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "business_domain_architect" => "domain_architect",
+            "business-architect" => "domain_architect",
+            "business_architect" => "domain_architect",
+            _ => normalized,
+        };
+    }
+
+    private static bool OuMatchesModelGroup(string userOrganizationUnit, string? modelGroupName)
+    {
+        var normalizedUserOu = NormalizeOuKey(userOrganizationUnit);
+        var normalizedModelOu = NormalizeOuKey(modelGroupName);
+        if (string.IsNullOrWhiteSpace(normalizedUserOu) || string.IsNullOrWhiteSpace(normalizedModelOu))
+        {
+            return false;
+        }
+
+        var userOuParts = normalizedUserOu.Split('/').Select(part => part.Trim()).ToList();
+        var modelOuParts = normalizedModelOu.Split('/').Select(part => part.Trim()).ToList();
+
+        return modelOuParts.All(modelPart =>
+            userOuParts.Any(userPart => userPart.Equals(modelPart, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private static bool IsGloballyScopedRole(string normalizedRole)
+    {
+        return normalizedRole == "admin" || normalizedRole == "data_architect";
+    }
+
+    private static string? ApplyOuPolicyToRole(
+        string? candidateRole,
+        string userOrganizationUnit,
+        string? modelGroupName)
+    {
+        var normalizedRole = NormalizeRoleName(candidateRole);
+        if (string.IsNullOrWhiteSpace(normalizedRole))
+        {
+            return null;
+        }
+
+        if (normalizedRole == "owner")
+        {
+            return normalizedRole;
+        }
+
+        if (IsGloballyScopedRole(normalizedRole))
+        {
+            return normalizedRole;
+        }
+
+        return OuMatchesModelGroup(userOrganizationUnit, modelGroupName)
+            ? normalizedRole
+            : null;
+    }
+
     private static string? ResolveGlobalDefaultRole(ISet<string> userApplicationRoles)
     {
         foreach (var roleName in GlobalDefaultModelRolesByPriority)
@@ -238,25 +297,23 @@ public class ModelsController : ControllerBase
             return globalDefaultRole;
         }
 
-        var normalizedUserOu = NormalizeOuKey(userOrganizationUnit);
-        var normalizedModelOu = NormalizeOuKey(modelGroupName);
-        if (string.IsNullOrWhiteSpace(normalizedUserOu) || string.IsNullOrWhiteSpace(normalizedModelOu))
+        // Data architects are globally scoped across all Organization Units.
+        if (userApplicationRoles.Contains("data_architect"))
+        {
+            return "data_architect";
+        }
+
+        if (!OuMatchesModelGroup(userOrganizationUnit, modelGroupName))
         {
             return null;
         }
 
-        // Split by "/" to handle hierarchical OUs (e.g., "DeveloperGroup / Corporate")
-        // Match if model OU is a parent or exact match of user OU
-        var userOuParts = normalizedUserOu.Split('/').Select(p => p.Trim()).ToList();
-        var modelOuParts = normalizedModelOu.Split('/').Select(p => p.Trim()).ToList();
-
-        // Check if all model OU parts exist in user OU parts
-        var ouMatches = modelOuParts.All(modelPart => 
-            userOuParts.Any(userPart => userPart.Equals(modelPart, StringComparison.OrdinalIgnoreCase)));
-
-        if (!ouMatches)
+        if (userApplicationRoles.Contains("domain_architect")
+            || userApplicationRoles.Contains("business_domain_architect")
+            || userApplicationRoles.Contains("business-architect")
+            || userApplicationRoles.Contains("business_architect"))
         {
-            return null;
+            return "domain_architect";
         }
 
         foreach (var roleName in ModelScopedApplicationRolesByPriority)
@@ -292,10 +349,11 @@ public class ModelsController : ControllerBase
 
         if (explicitCollaboration != null)
         {
-            return explicitCollaboration.Role;
+            return ApplyOuPolicyToRole(explicitCollaboration.Role, userOrganizationUnit, model.ModelGroup?.Name);
         }
 
-        return ResolveDefaultRoleFromOu(userOrganizationUnit, model.ModelGroup?.Name, userApplicationRoles);
+        var defaultRole = ResolveDefaultRoleFromOu(userOrganizationUnit, model.ModelGroup?.Name, userApplicationRoles);
+        return ApplyOuPolicyToRole(defaultRole, userOrganizationUnit, model.ModelGroup?.Name);
     }
 
     private async Task<bool> UserHasAccessAsync(Guid modelId, string minimumRole = "viewer")

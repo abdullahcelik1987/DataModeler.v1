@@ -103,6 +103,47 @@ function getCurrentStageIndex(detail: ChangeRequestDetail): number {
   return 0;
 }
 
+function getPendingRoleLabel(status: string): string {
+  if (status === 'Pending_Architect') {
+    return 'Data Architect';
+  }
+
+  if (status === 'Pending_Business') {
+    return 'Business Domain Architect';
+  }
+
+  return 'Approver';
+}
+
+function getHoursSince(isoDate: string): number {
+  const diffMs = Date.now() - new Date(isoDate).getTime();
+  return Math.max(0, Math.floor(diffMs / 3600000));
+}
+
+function getInboxUrgencyClass(hoursWaiting: number): string {
+  if (hoursWaiting >= 48) {
+    return 'border-rose-300 bg-rose-50 text-rose-700';
+  }
+
+  if (hoursWaiting >= 24) {
+    return 'border-amber-300 bg-amber-50 text-amber-700';
+  }
+
+  return 'border-emerald-300 bg-emerald-50 text-emerald-700';
+}
+
+function getInboxUrgencyLabel(hoursWaiting: number): string {
+  if (hoursWaiting >= 48) {
+    return 'Gecikmiş';
+  }
+
+  if (hoursWaiting >= 24) {
+    return 'Bugün öncelikli';
+  }
+
+  return 'Normal';
+}
+
 function ChangeRequestsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -117,7 +158,7 @@ function ChangeRequestsContent() {
   const [canDeleteRequests, setCanDeleteRequests] = useState(false);
   const [activeTab, setActiveTab] = useState<'mine' | 'pending'>(() => {
     const mode = searchParams.get('mode');
-    return mode === 'pending' ? 'pending' : 'mine';
+    return mode === 'mine' ? 'mine' : 'pending';
   });
   const [fromDate, setFromDate] = useState<string>('');
   const [toDate, setToDate] = useState<string>('');
@@ -127,6 +168,12 @@ function ChangeRequestsContent() {
   const [selectedDetail, setSelectedDetail] = useState<ChangeRequestDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [pendingInboxCount, setPendingInboxCount] = useState(0);
+  const [pendingOverdueCount, setPendingOverdueCount] = useState(0);
+  const [pendingTodayCount, setPendingTodayCount] = useState(0);
+  const [pendingOnlyOverdue, setPendingOnlyOverdue] = useState(false);
+  const [pendingQuery, setPendingQuery] = useState('');
+  const [pendingStatsLoading, setPendingStatsLoading] = useState(false);
 
   const authHeaders = () => {
     const token = localStorage.getItem('token');
@@ -264,21 +311,78 @@ function ChangeRequestsContent() {
     }
   };
 
+  const loadPendingInboxStats = async (canViewOverride?: boolean) => {
+    const canView = canViewOverride ?? canViewPending;
+    if (!canView) {
+      setPendingInboxCount(0);
+      setPendingOverdueCount(0);
+      setPendingTodayCount(0);
+      return;
+    }
+
+    setPendingStatsLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('mode', 'pending');
+      params.set('status', 'pending');
+
+      const response = await fetch(`${API_URL}/api/change-requests/list?${params.toString()}`, {
+        headers: authHeaders(),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to load pending inbox stats.');
+      }
+
+      const data = (await response.json()) as ChangeRequestListItem[];
+      const today = new Date().toISOString().slice(0, 10);
+
+      const overdue = data.filter((item) => getHoursSince(item.createdAt) >= 48).length;
+      const todayCount = data.filter((item) => item.createdAt.slice(0, 10) === today).length;
+
+      setPendingInboxCount(data.length);
+      setPendingOverdueCount(overdue);
+      setPendingTodayCount(todayCount);
+    } catch {
+      setPendingInboxCount(0);
+      setPendingOverdueCount(0);
+      setPendingTodayCount(0);
+    } finally {
+      setPendingStatsLoading(false);
+    }
+  };
+
   useEffect(() => {
     const initialize = async () => {
       const capabilities = await loadCapabilities();
 
       const mode = searchParams.get('mode');
-      const initialMode: 'mine' | 'pending' = mode === 'pending' && capabilities.canViewPending ? 'pending' : 'mine';
+      const initialMode: 'mine' | 'pending' = mode === 'mine'
+        ? 'mine'
+        : capabilities.canViewPending
+          ? 'pending'
+          : 'mine';
       setActiveTab(initialMode);
 
       const defaults = buildDefaultFilter(initialMode);
       hydrateFilterInputs(defaults);
       await loadList(defaults);
+
+      if (capabilities.canViewPending) {
+        await loadPendingInboxStats(capabilities.canViewPending);
+      }
     };
 
     void initialize();
   }, []);
+
+  useEffect(() => {
+    if (!canViewPending) {
+      return;
+    }
+
+    void loadPendingInboxStats();
+  }, [canViewPending]);
 
   useEffect(() => {
     if (!canViewPending && activeTab === 'pending') {
@@ -352,6 +456,46 @@ function ChangeRequestsContent() {
 
     void loadList(filter);
   };
+
+  const filteredPendingItems = useMemo(() => {
+    if (activeTab !== 'pending') {
+      return items;
+    }
+
+    const normalizedQuery = pendingQuery.trim().toLowerCase();
+    return items.filter((item) => {
+      const hoursWaiting = getHoursSince(item.createdAt);
+      if (pendingOnlyOverdue && hoursWaiting < 48) {
+        return false;
+      }
+
+      if (!normalizedQuery) {
+        return true;
+      }
+
+      const searchText = [item.changeCode, item.modelName, item.title, item.requesterEmail, item.requesterName]
+        .join(' ')
+        .toLowerCase();
+
+      return searchText.includes(normalizedQuery);
+    });
+  }, [activeTab, items, pendingOnlyOverdue, pendingQuery]);
+
+  useEffect(() => {
+    if (activeTab !== 'pending') {
+      return;
+    }
+
+    if (filteredPendingItems.length === 0) {
+      setSelectedRequestId(null);
+      setSelectedDetail(null);
+      return;
+    }
+
+    if (!selectedRequestId || !filteredPendingItems.some((item) => item.id === selectedRequestId)) {
+      setSelectedRequestId(filteredPendingItems[0].id);
+    }
+  }, [activeTab, filteredPendingItems, selectedRequestId]);
 
   const onDelete = async (id: string) => {
     if (!canDeleteRequests) {
@@ -427,6 +571,7 @@ function ChangeRequestsContent() {
       title="Change Requests"
       subtitle="Approval workflow, visual diff, and SQL script export"
       currentArea="change-requests"
+      notificationCountByArea={{ 'change-requests': pendingInboxCount }}
       userEmail={user?.email}
       onLogout={() => {
         logout();
@@ -448,155 +593,287 @@ function ChangeRequestsContent() {
       <div className="mb-4 inline-flex rounded-lg border border-slate-200 p-1 text-sm">
         <button
           type="button"
+          onClick={() => onModeChange('pending')}
+          disabled={!canViewPending}
+          className={`rounded-md px-3 py-1.5 ${activeTab === 'pending' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}
+        >
+          Onay Gelen Kutusu
+          {pendingInboxCount > 0 ? ` (${pendingInboxCount > 99 ? '99+' : pendingInboxCount})` : ''}
+        </button>
+        <button
+          type="button"
           onClick={() => onModeChange('mine')}
           className={`rounded-md px-3 py-1.5 ${activeTab === 'mine' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}
         >
           Değişiklik Listeleme
         </button>
-        <button
-          type="button"
-          onClick={() => onModeChange('pending')}
-          disabled={!canViewPending}
-          className={`rounded-md px-3 py-1.5 ${activeTab === 'pending' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}
-        >
-          Onay Bekleyenler
-        </button>
       </div>
+
+      {activeTab === 'pending' && (
+        <section className="mb-4 grid grid-cols-1 gap-3 lg:grid-cols-4">
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Toplam Bekleyen</p>
+            <p className="mt-2 text-2xl font-bold text-slate-900">{pendingStatsLoading ? '...' : pendingInboxCount}</p>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Bugün Gelen</p>
+            <p className="mt-2 text-2xl font-bold text-slate-900">{pendingStatsLoading ? '...' : pendingTodayCount}</p>
+          </div>
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Gecikmiş</p>
+            <p className="mt-2 text-2xl font-bold text-amber-800">{pendingStatsLoading ? '...' : pendingOverdueCount}</p>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Hızlı İşlemler</p>
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const filter = buildDefaultFilter('pending');
+                  hydrateFilterInputs(filter);
+                  void loadList(filter);
+                  void loadPendingInboxStats();
+                }}
+                className="dm-btn-primary px-3 py-1.5 text-xs"
+              >
+                Yenile
+              </button>
+              <label className="inline-flex items-center gap-1 text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={pendingOnlyOverdue}
+                  onChange={(event) => setPendingOnlyOverdue(event.target.checked)}
+                />
+                Sadece gecikmiş
+              </label>
+            </div>
+          </div>
+        </section>
+      )}
 
       <div className="grid min-h-[calc(100vh-240px)] grid-cols-1 gap-4 lg:grid-rows-[52vh_42vh]">
         <section className="grid h-full min-h-[360px] grid-cols-1 gap-4 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 xl:grid-cols-[320px_minmax(0,1fr)]">
           <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Filtreler</h2>
+            {activeTab === 'pending' ? (
+              <>
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Gelen Kutusu</h2>
+                <p className="mt-1 text-xs text-slate-500">Sadece rolüne atanmış onay kayıtları görünür.</p>
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-600">Hızlı Arama</label>
+                    <input
+                      type="text"
+                      value={pendingQuery}
+                      onChange={(event) => setPendingQuery(event.target.value)}
+                      placeholder="CR kodu, model, talep sahibi"
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    />
+                  </div>
+                  <label className="inline-flex items-center gap-2 text-xs text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={pendingOnlyOverdue}
+                      onChange={(event) => setPendingOnlyOverdue(event.target.checked)}
+                    />
+                    Sadece 48+ saat bekleyenler
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingQuery('');
+                      setPendingOnlyOverdue(false);
+                    }}
+                    className="dm-btn-secondary w-full"
+                  >
+                    Filtreleri Temizle
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Filtreler</h2>
 
-            <div className="mt-3 space-y-3">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Baslangic Tarihi</label>
-                <input
-                  type="date"
-                  value={fromDate}
-                  onChange={(event) => setFromDate(event.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                />
-              </div>
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-600">Baslangic Tarihi</label>
+                    <input
+                      type="date"
+                      value={fromDate}
+                      onChange={(event) => setFromDate(event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    />
+                  </div>
 
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Bitis Tarihi</label>
-                <input
-                  type="date"
-                  value={toDate}
-                  onChange={(event) => setToDate(event.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                />
-              </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-600">Bitis Tarihi</label>
+                    <input
+                      type="date"
+                      value={toDate}
+                      onChange={(event) => setToDate(event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    />
+                  </div>
 
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Kullanici (email/username)</label>
-                <input
-                  type="text"
-                  value={requester}
-                  onChange={(event) => setRequester(event.target.value)}
-                  placeholder="orn. ali"
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                />
-              </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-600">Kullanici (email/username)</label>
+                    <input
+                      type="text"
+                      value={requester}
+                      onChange={(event) => setRequester(event.target.value)}
+                      placeholder="orn. ali"
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    />
+                  </div>
 
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Status</label>
-                <select
-                  value={status}
-                  onChange={(event) => setStatus(event.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                >
-                  {statusOptions.map((item) => (
-                    <option key={item.value || 'all'} value={item.value}>{item.label}</option>
-                  ))}
-                </select>
-              </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-600">Status</label>
+                    <select
+                      value={status}
+                      onChange={(event) => setStatus(event.target.value)}
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    >
+                      {statusOptions.map((item) => (
+                        <option key={item.value || 'all'} value={item.value}>{item.label}</option>
+                      ))}
+                    </select>
+                  </div>
 
-              <button type="button" onClick={onFetch} className="dm-btn-primary w-full">
-                Degisiklikleri Getir
-              </button>
-            </div>
+                  <button type="button" onClick={onFetch} className="dm-btn-primary w-full">
+                    Degisiklikleri Getir
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="overflow-hidden rounded-xl border border-slate-100">
             {loading ? (
               <p className="p-4 text-sm text-slate-500">Loading requests...</p>
-            ) : items.length === 0 ? (
+            ) : (activeTab === 'pending' ? filteredPendingItems : items).length === 0 ? (
               <p className="p-4 text-sm text-slate-500">No records.</p>
             ) : (
-              <div className="h-full overflow-auto">
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
-                  <thead className="sticky top-0 z-10 bg-white">
-                    <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
-                      <th className="px-2 py-2">Kod</th>
-                      <th className="px-2 py-2">Model</th>
-                      <th className="px-2 py-2">Kullanici</th>
-                      <th className="px-2 py-2">Created</th>
-                      <th className="px-2 py-2">Updated</th>
-                      <th className="px-2 py-2">Status</th>
-                      <th className="px-2 py-2">Islem</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {items.map((item) => {
+              activeTab === 'pending' ? (
+                <div className="h-full overflow-auto p-3">
+                  <div className="space-y-2">
+                    {filteredPendingItems.map((item) => {
                       const isSelected = item.id === selectedRequestId;
+                      const hoursWaiting = getHoursSince(item.createdAt);
+                      const urgencyClass = getInboxUrgencyClass(hoursWaiting);
 
                       return (
-                        <tr
+                        <div
                           key={item.id}
                           onClick={() => onSelectRequest(item.id)}
-                          aria-selected={isSelected}
-                          className={`transition ${isSelected ? 'bg-cyan-100/80' : 'hover:bg-slate-50'} hover:cursor-pointer`}
+                          className={`rounded-xl border p-3 transition hover:cursor-pointer ${isSelected ? 'border-cyan-400 bg-cyan-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}
                         >
-                          <td className={`px-2 py-2 font-semibold text-slate-800 ${isSelected ? 'border-l-4 border-cyan-500 bg-cyan-100' : 'cursor-pointer'}`}>
-                            <div className="flex items-center gap-2">
-                              {isSelected && <span className="h-2.5 w-2.5 rounded-full bg-cyan-600" />}
-                              <span>{item.changeCode || '-'}</span>
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{item.changeCode}</p>
+                              <p className="text-sm font-semibold text-slate-900">{item.modelName}</p>
+                              <p className="text-xs text-slate-600">Talep: {item.requesterName || item.requesterEmail}</p>
                             </div>
-                          </td>
-                          <td className={`px-2 py-2 text-slate-700 ${isSelected ? 'bg-cyan-100' : 'cursor-pointer'}`}>{item.modelName}</td>
-                          <td className={`px-2 py-2 text-slate-700 ${isSelected ? 'bg-cyan-100' : 'cursor-pointer'}`}>{item.requesterName || item.requesterEmail}</td>
-                          <td className={`px-2 py-2 text-slate-600 ${isSelected ? 'bg-cyan-100' : 'cursor-pointer'}`}>{new Date(item.createdAt).toLocaleString()}</td>
-                          <td className={`px-2 py-2 text-slate-600 ${isSelected ? 'bg-cyan-100' : 'cursor-pointer'}`}>{new Date(item.updatedAt).toLocaleString()}</td>
-                          <td className={`px-2 py-2 ${isSelected ? 'bg-cyan-100' : 'cursor-pointer'}`}>
-                            <span className={`inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${getStatusClasses(item.status)}`}>
-                              {item.status}
-                            </span>
-                          </td>
-                          <td className={`px-2 py-2 ${isSelected ? 'bg-cyan-100' : ''}`}>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  router.push(`/change-requests/${item.id}?mode=${activeTab}`);
-                                }}
-                                className="dm-btn-primary px-3 py-1 text-xs"
-                              >
-                                Aç
-                              </button>
-                              {canDeleteRequests && (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="inline-flex rounded-full border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-semibold text-indigo-700">
+                                {getPendingRoleLabel(item.status)}
+                              </span>
+                              <span className={`inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${urgencyClass}`}>
+                                {getInboxUrgencyLabel(hoursWaiting)}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+                            <span>{hoursWaiting} saattir bekliyor</span>
+                            <span>Olusturma: {new Date(item.createdAt).toLocaleString()}</span>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                router.push(`/change-requests/${item.id}?mode=${activeTab}`);
+                              }}
+                              className="dm-btn-primary px-3 py-1 text-xs"
+                            >
+                              Aç ve İncele
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="h-full overflow-auto">
+                  <table className="min-w-full divide-y divide-slate-200 text-sm">
+                    <thead className="sticky top-0 z-10 bg-white">
+                      <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
+                        <th className="px-2 py-2">Kod</th>
+                        <th className="px-2 py-2">Model</th>
+                        <th className="px-2 py-2">Kullanici</th>
+                        <th className="px-2 py-2">Created</th>
+                        <th className="px-2 py-2">Updated</th>
+                        <th className="px-2 py-2">Status</th>
+                        <th className="px-2 py-2">Islem</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {items.map((item) => {
+                        const isSelected = item.id === selectedRequestId;
+
+                        return (
+                          <tr
+                            key={item.id}
+                            onClick={() => onSelectRequest(item.id)}
+                            aria-selected={isSelected}
+                            className={`transition ${isSelected ? 'bg-cyan-100/80' : 'hover:bg-slate-50'} hover:cursor-pointer`}
+                          >
+                            <td className={`px-2 py-2 font-semibold text-slate-800 ${isSelected ? 'border-l-4 border-cyan-500 bg-cyan-100' : 'cursor-pointer'}`}>
+                              <div className="flex items-center gap-2">
+                                {isSelected && <span className="h-2.5 w-2.5 rounded-full bg-cyan-600" />}
+                                <span>{item.changeCode || '-'}</span>
+                              </div>
+                            </td>
+                            <td className={`px-2 py-2 text-slate-700 ${isSelected ? 'bg-cyan-100' : 'cursor-pointer'}`}>{item.modelName}</td>
+                            <td className={`px-2 py-2 text-slate-700 ${isSelected ? 'bg-cyan-100' : 'cursor-pointer'}`}>{item.requesterName || item.requesterEmail}</td>
+                            <td className={`px-2 py-2 text-slate-600 ${isSelected ? 'bg-cyan-100' : 'cursor-pointer'}`}>{new Date(item.createdAt).toLocaleString()}</td>
+                            <td className={`px-2 py-2 text-slate-600 ${isSelected ? 'bg-cyan-100' : 'cursor-pointer'}`}>{new Date(item.updatedAt).toLocaleString()}</td>
+                            <td className={`px-2 py-2 ${isSelected ? 'bg-cyan-100' : 'cursor-pointer'}`}>
+                              <span className={`inline-flex rounded-full border px-2 py-1 text-xs font-semibold ${getStatusClasses(item.status)}`}>
+                                {item.status}
+                              </span>
+                            </td>
+                            <td className={`px-2 py-2 ${isSelected ? 'bg-cyan-100' : ''}`}>
+                              <div className="flex items-center gap-2">
                                 <button
                                   type="button"
                                   onClick={(event) => {
                                     event.stopPropagation();
-                                    void onDelete(item.id);
+                                    router.push(`/change-requests/${item.id}?mode=${activeTab}`);
                                   }}
-                                  disabled={deletingId === item.id}
-                                  className="rounded-md border border-red-200 bg-red-50 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                  className="dm-btn-primary px-3 py-1 text-xs"
                                 >
-                                  {deletingId === item.id ? 'Siliniyor...' : 'Sil'}
+                                  Aç
                                 </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                                {canDeleteRequests && (
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void onDelete(item.id);
+                                    }}
+                                    disabled={deletingId === item.id}
+                                    className="rounded-md border border-red-200 bg-red-50 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    {deletingId === item.id ? 'Siliniyor...' : 'Sil'}
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )
             )}
           </div>
         </section>

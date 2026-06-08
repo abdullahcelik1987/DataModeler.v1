@@ -1,253 +1,187 @@
-# README.md - DataModeler.v1
+# DataModeler.v1
 
-## Project Overview
+DataModeler.v1 is a governed data modeling platform with collaborative model editing, workflow-based change requests, and role-scoped approval inboxes.
 
-**DataModeler.v1** is a web-based DBML (Database Markup Language) data modeling tool with real-time collaboration, visual ER diagram editing, and SQL migration generation.
+This README is prepared for repository handoff so the project can be cloned to another machine and continued without context loss.
 
-### Tech Stack
-- **Backend**: .NET 8 (ASP.NET Core)
-- **Frontend**: Next.js 14 + React + TypeScript
-- **Database**: PostgreSQL 15
-- **Real-time**: WebSocket + yjs (CRDT)
-- **Diagrams**: ReactFlow + Cytoscape.js (open-source)
-- **Deployment**: Docker Compose (self-hosted on-premises)
+## 1) What the system does
+- Model creation and management under OU-based logical groups
+- Collaborative modeling and versioning
+- Change request lifecycle with workflow stage routing
+- Approval inbox for Pending_Business and Pending_Architect stages
+- Approval/reject actions with audit trail and workflow snapshot history
 
----
+## 2) High-level architecture
+- Frontend: Next.js 14 + React + TypeScript
+- Backend: ASP.NET Core (.NET 8)
+- Database: PostgreSQL 15
+- Cache: Redis 7
+- Orchestration: Docker Compose
 
-## Directory Structure
+Related detail docs:
+- docs/COMPONENT_INVENTORY.md
+- docs/DEVELOPMENT_CONTEXT.md
 
-```
+## 3) Repository structure
+
+```text
 DataModeler.v1/
-├── backend/                    # .NET 8 API
-│   ├── Controllers/            # API endpoints
-│   ├── Services/               # Business logic
-│   ├── Models/                 # Entity classes
-│   ├── Data/                   # Entity Framework DbContext & migrations
-│   ├── DTOs/                   # Data transfer objects
-│   ├── Hubs/                   # WebSocket hubs
-│   ├── appsettings.json        # Configuration
-│   ├── DataModeler.API.csproj  # Project file
-│   └── Program.cs              # Entry point
-│
-├── frontend/                   # Next.js React App
-│   ├── src/
-│   │   ├── app/                # Next.js app directory
-│   │   ├── components/         # React components
-│   │   ├── hooks/              # Custom React hooks
-│   │   ├── services/           # API services
-│   │   ├── lib/                # Utilities and helpers
-│   │   └── types/              # TypeScript types
-│   ├── public/                 # Static assets
-│   ├── package.json            # Dependencies
-│   ├── next.config.js          # Next.js configuration
-│   └── tsconfig.json           # TypeScript configuration
-│
-├── database/
-│   └── schema.sql              # PostgreSQL schema
-│
-├── docker/
-│   ├── Dockerfile.backend      # Backend container
-│   ├── Dockerfile.frontend     # Frontend container
-│   └── docker-compose.yml      # Multi-service orchestration
-│
-├── PROJECT_VERSION_CONFIG.md   # Release history & versioning
-├── .env.example                # Environment variables template
-├── .env.local                  # Local environment variables (DO NOT commit)
-└── .gitignore                  # Git ignore rules
+|- backend/                       # .NET API, services, DTOs, EF Core
+|- frontend/                      # Next.js app
+|- database/                      # schema and logical backup artifacts
+|  |- schema.sql
+|  \- logical-backup/
+|- scripts/                       # operational scripts (backup/restore/test)
+|- docker-compose.yml             # production-like local compose
+|- docker-compose.dev.yml         # development compose
+|- PROJECT_VERSION_CONFIG.md      # version and milestone history
+|- PHASE_*_VERIFICATION.md        # incremental delivery verification notes
+\- docs/                          # persistent technical context
 ```
 
----
+## 4) Runtime components and purpose
 
-## Quick Start (Phase 1 Only)
+### Frontend (`frontend/`)
+Purpose:
+- User interface for models, designer, change requests, admin
+- Approval inbox visualization and interactions
+
+Integration:
+- Uses `NEXT_PUBLIC_API_URL`
+- Sends bearer token to backend APIs
+
+### Backend (`backend/`)
+Purpose:
+- Domain logic and REST APIs
+- Role, OU, workflow, and approval enforcement
+
+Integration:
+- Connects PostgreSQL using `ConnectionStrings__DefaultConnection`
+- Connects Redis using `Redis__*` settings
+
+### PostgreSQL (`postgres` service)
+Purpose:
+- Persistent storage for users, models, versions, change requests, audit logs
+
+Integration:
+- Backend EF Core context and SQL operations
+- Logical backup/export with `pg_dump`
+
+### Redis (`redis` service)
+Purpose:
+- Cache support for backend
+
+Integration:
+- Configured by compose and backend settings
+
+## 5) Local startup
 
 ### Prerequisites
-- Docker & Docker Compose
-- .NET 8 SDK (optional, for local development)
-- Node.js 20+ (optional, for local development)
-- PostgreSQL 15 (optional, Docker handles this)
+- Docker + Docker Compose
+- Optional local SDKs if you run outside containers:
+  - .NET 8 SDK
+  - Node.js 18+
 
-### Setup & Run
-
-1. **Clone or navigate to the project**
-   ```bash
-   cd c:\Users\celik\DataModeler.v1
-   ```
-
-2. **Start Docker Compose**
-   ```bash
-   docker compose -f docker-compose.dev.yml up -d --build
-   ```
-
-3. **Wait for services to start**
-   - PostgreSQL: `localhost:5432`
-   - Backend API: `http://localhost:8080`
-   - Frontend: `http://localhost:3000`
-
-4. **Verify health**
-   ```bash
-   curl http://localhost:8080/health
-   ```
-
-5. **Access Application**
-   - Frontend: http://localhost:3000
-   - API Swagger Docs: http://localhost:8080/swagger
-
----
-
-## Phase 1 Status: ✅ Infrastructure Setup Complete
-
-### Completed
-- ✅ PostgreSQL schema with all core tables
-- ✅ .NET 8 backend project structure
-- ✅ Entity Framework Core models
-- ✅ Next.js frontend scaffolding
-- ✅ Docker setup (Dockerfile + docker-compose)
-- ✅ Configuration files (.env, appsettings.json)
-- ✅ Health check endpoint
-- ✅ Basic API controllers (Health, Models)
-- ✅ Project version tracking config
-
-### Next Phase (Phase 2)
-- Authentication & Authorization
-- LDAP & Azure AD integration
-- JWT token management
-- Super admin setup
-
----
-
-## Configuration
-
-### Environment Variables (`.env.local`)
-
-```bash
-DB_PASSWORD=secure_password_123
-JWT_SECRET=your-256-bit-secret-key-minimum-32-characters-required-change-this-in-production
-JWT_ISSUER=https://datamodeler.local
-JWT_AUDIENCE=datamodeler-api
-CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-API_URL=http://localhost:5000
-NEXT_PUBLIC_API_URL=http://localhost:5000
-```
-
----
-
-## API Endpoints (Phase 1)
-
-### Health Check
-- `GET /health` — System health check and database connectivity
-
-### Models (Protected)
-- `GET /api/models` — List all models for current user
-- `GET /api/models/{id}` — Get specific model
-- `POST /api/models` — Create new model
-- More endpoints come in Phase 4+
-
----
-
-## Default Credentials (Initial Setup Only)
-
-- **Username**: Administrator
-- **Password**: ktdm123456
-
-⚠️ **MUST be changed on first production login!**
-
----
-
-## Development Notes
-
-### Backend (.NET 8)
-- Entity Framework Core for data access
-- PostgreSQL provider configured
-- JWT authentication ready
-- CORS configured for frontend
-- Swagger documentation available
-
-### Frontend (Next.js 14)
-- React 18 with TypeScript
-- TailwindCSS for styling
-- API client with axios
-- Ready for phase 4 components
-
-### Frontend Dev Compose Behavior
-- Development runs with `docker compose -f docker-compose.dev.yml`.
-- The frontend service runs in real Next.js dev mode with `npm run dev`, not `npm start`.
-- Source code is bind-mounted from `./frontend`, but `node_modules` and `.next` are isolated in Docker volumes.
-- This prevents stale host `frontend/.next` output from overriding the running UI after code changes.
-- If frontend changes do not appear, first verify you are using `docker-compose.dev.yml`, not an older compose file.
-
-### Database
-- PostgreSQL 15 Alpine
-- All tables created on first run via schema.sql
-- Triggers for auto-updating timestamps
-- Indexes for performance optimization
-
----
-
-## Docker Volumes & Data Persistence
-
-PostgreSQL data is stored in Docker volume `postgres_data` and persists across container restarts.
-
----
-
-## Troubleshooting
-
-### Docker containers won't start
-```bash
-docker compose -f docker-compose.dev.yml logs -f
-```
-
-### Database backup and restore (PowerShell)
-Create backup:
+### Production-like local stack
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\db-backup.ps1 -OutputDir .\backups -KeepLast 30
+docker compose up -d --build
+docker compose ps
 ```
 
-Restore backup:
+### Development stack
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\db-restore.ps1 -BackupFile .\backups\datamodeler-YYYYMMDD-HHMMSS.dump
+docker compose -f docker-compose.dev.yml up -d --build
+docker compose -f docker-compose.dev.yml ps
 ```
 
-Destructive restore (drops objects before restore):
+### Health checks
+- Backend: http://localhost:8080/health
+- Frontend: http://localhost:3000
+
+## 6) Environment configuration
+Use `.env.example` as baseline and create your own `.env` or environment-specific overrides.
+
+Main variables:
+- `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT`
+- `REDIS_PASSWORD`, `REDIS_PORT`
+- `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`
+- `BACKEND_PORT`, `FRONTEND_PORT`
+- `NEXT_PUBLIC_API_URL`
+- `ASPNETCORE_ENVIRONMENT`
+
+Never commit real secrets.
+
+## 7) Authorization and workflow policy snapshot
+Current policy baseline:
+- Developer and domain architect roles are OU-scoped by default
+- Data architect is globally scoped across OUs
+- Stage actions (approve/reject) are validated against workflow stage + effective model-scoped role
+
+Recent alignment notes are in:
+- docs/DEVELOPMENT_CONTEXT.md
+
+## 8) Database backup and restore
+
+### A) Physical/custom backup (existing)
+- Backup: `scripts/db-backup.ps1`
+- Restore: `scripts/db-restore.ps1`
+
+### B) Logical backup for repository portability (new)
+- Export script: `scripts/db-export-logical.ps1`
+- Restore script: `scripts/db-restore-logical.ps1`
+- Output folder: `database/logical-backup/`
+
+Current committed logical artifacts:
+- `database/logical-backup/latest-schema.sql`
+- `database/logical-backup/latest-data.sql`
+- Timestamped schema/data SQL pairs
+
+Repository safety note:
+- Sensitive credential-like values in logical data snapshots should be redacted before push.
+- If you need exact production secrets, inject them post-restore through secure env/config channels.
+
+Export logical backup:
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\db-restore.ps1 -BackupFile .\backups\datamodeler-YYYYMMDD-HHMMSS.dump -DropAndRecreate -Force
+powershell -ExecutionPolicy Bypass -File .\scripts\db-export-logical.ps1 -UpdateLatestAliases -UpdateRootSchema
 ```
 
-### PostgreSQL connection failed
-Verify container is running:
-```bash
-docker ps
+Restore logical backup:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\db-restore-logical.ps1 -Force
 ```
 
-### Frontend API errors
-Check backend health: `curl http://localhost:8080/health`
+## 9) Move project to another machine
+1. Clone repository.
+2. Prepare env values from `.env.example`.
+3. Start stack with compose.
+4. If needed, restore DB using logical backup scripts.
+5. Verify health endpoints.
+6. Open frontend and log in with environment-appropriate credentials.
 
----
+## 10) GitHub update checklist before push
+1. Ensure working tree contains intended files only.
+2. Ensure no real credentials in tracked files.
+3. Ensure `database/logical-backup/latest-*.sql` reflects current intended DB state.
+4. Ensure README and docs reflect latest behavior.
+5. Run smoke checks:
+   - `docker compose ps`
+   - frontend loads
+   - backend health endpoint returns success
 
-## Next Steps
+## 11) Key files for ongoing development
+- Backend workflow/auth:
+  - backend/Services/ChangeRequestService.cs
+  - backend/Controllers/ModelsController.cs
+  - backend/Controllers/ChangeRequestsController.cs
+- Frontend approval UI:
+  - frontend/src/app/change-requests/page.tsx
+  - frontend/src/components/admin/AppShell.tsx
+  - frontend/src/components/change-requests/WorkflowExplorer.tsx
+- Context docs:
+  - docs/DEVELOPMENT_CONTEXT.md
+  - docs/COMPONENT_INVENTORY.md
 
-1. Verify Docker containers are running: `docker ps`
-2. Check API health: http://localhost:8080/health
-3. Access frontend: http://localhost:3000
-4. Review `PROJECT_VERSION_CONFIG.md` for roadmap
-5. Proceed to Phase 2 (Authentication) when ready
-
----
-
-## Links
-
-- **DBML Documentation**: https://www.dbml.org/
-- **PostgreSQL Docs**: https://www.postgresql.org/docs/15/
-- **.NET 8**: https://learn.microsoft.com/dotnet/core/whats-new/dotnet-8
-- **Next.js Docs**: https://nextjs.org/docs
-- **ReactFlow**: https://reactflow.dev/
-- **yjs**: https://github.com/yjs/yjs
-
----
-
-## Status: 🟡 Development in Progress
-
-**Current Phase**: Phase 1 - Infrastructure Setup ✅ COMPLETE  
-**Next Phase**: Phase 2 - Authentication & Authorization  
-**Target Release**: v1.0.0 (August 17, 2026)
-
-For detailed version history, see [PROJECT_VERSION_CONFIG.md](./PROJECT_VERSION_CONFIG.md)
+## 12) Version and phase history
+See:
+- PROJECT_VERSION_CONFIG.md
+- PHASE_1_VERIFICATION.md ... PHASE_11_VERIFICATION.md

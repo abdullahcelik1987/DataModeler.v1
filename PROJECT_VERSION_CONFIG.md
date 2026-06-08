@@ -218,6 +218,35 @@
 ## Configuration & Secrets
 
 ### Environment Variables (In `.env.local`)
+
+---
+
+## Current Operational Snapshot (June 2026)
+
+### Effective Runtime Baseline
+- Frontend and backend run via Docker Compose with healthy service checks.
+- Approval inbox and workflow authorization logic are actively used in production-like flow.
+- OU-based role scoping is enforced for developer/domain architect defaults.
+- Data architect role is globally scoped across OUs.
+
+### Recently Verified Behaviors
+- Pending inbox visibility is role + OU scoped.
+- Approve/reject actions are stage-sensitive and bound to effective role.
+- Change Requests UI defaults to pending inbox tab and tab order prioritizes inbox.
+- Shell-level change request badge is visible across module pages.
+
+### Handoff Artifacts Added
+- docs/DEVELOPMENT_CONTEXT.md
+- docs/COMPONENT_INVENTORY.md
+- scripts/db-export-logical.ps1
+- scripts/db-restore-logical.ps1
+- database/logical-backup/latest-schema.sql
+- database/logical-backup/latest-data.sql
+
+### Recommended Next Milestone Focus
+- Harden test automation for role/OU authorization matrix.
+- Add CI checks for workflow stage authorization regressions.
+- Keep logical backup artifacts refreshed before each major handoff.
 - `DB_PASSWORD` — PostgreSQL user password
 - `JWT_SECRET` — 256-bit secret for JWT signing (change in production!)
 - `JWT_ISSUER` — JWT token issuer (default: https://datamodeler.local)

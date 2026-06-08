@@ -2,7 +2,11 @@
 
 import Link from 'next/link';
 import { Database, GitPullRequestArrow, PencilRuler, Settings, Sparkles } from 'lucide-react';
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080')
+  .replace(/\/$/, '')
+  .replace(/\/api$/, '');
 
 type AppArea = 'models' | 'designer' | 'change-requests' | 'admin';
 
@@ -21,6 +25,7 @@ type AppShellProps = {
   onLogout?: () => void;
   topActions?: React.ReactNode;
   sideActions?: React.ReactNode;
+  notificationCountByArea?: Partial<Record<AppArea, number>>;
   children: React.ReactNode;
 };
 
@@ -39,8 +44,39 @@ export function AppShell({
   onLogout,
   topActions,
   sideActions,
+  notificationCountByArea,
   children,
 }: AppShellProps) {
+  const [internalPendingCount, setInternalPendingCount] = useState(0);
+
+  useEffect(() => {
+    const fetchPendingCount = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        if (!token) return;
+        const resp = await fetch(`${API_BASE}/api/change-requests/pending`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!resp.ok) return;
+        const data: unknown = await resp.json();
+        setInternalPendingCount(Array.isArray(data) ? data.length : 0);
+      } catch {
+        // network errors are silently ignored; badge stays at last known value
+      }
+    };
+
+    void fetchPendingCount();
+    const interval = setInterval(() => void fetchPendingCount(), 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Prop values take precedence over internally fetched values so
+  // the change-requests page can still pass its own count.
+  const effectiveCounts: Partial<Record<AppArea, number>> = {
+    'change-requests': internalPendingCount,
+    ...notificationCountByArea,
+  };
+
   return (
     <div className="dm-page !p-0 md:!p-0">
       <div className="flex min-h-screen w-full gap-4 p-0 md:gap-5 md:p-0">
@@ -60,6 +96,7 @@ export function AppShell({
               {NAV_ITEMS.map((item) => {
                 const isActive = item.id === currentArea;
                 const Icon = item.icon;
+                const notificationCount = effectiveCounts[item.id] ?? 0;
 
                 return (
                   <Link
@@ -69,6 +106,11 @@ export function AppShell({
                   >
                     <Icon className="h-4 w-4" strokeWidth={2.2} />
                     <span>{item.label}</span>
+                    {notificationCount > 0 ? (
+                      <span className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                        {notificationCount > 99 ? '99+' : notificationCount}
+                      </span>
+                    ) : null}
                   </Link>
                 );
               })}
@@ -108,6 +150,7 @@ export function AppShell({
             <div className="mb-3 flex gap-2 lg:hidden">
               {NAV_ITEMS.map((item) => {
                 const isActive = item.id === currentArea;
+                const notificationCount = effectiveCounts[item.id] ?? 0;
                 return (
                   <Link
                     key={item.id}
@@ -119,6 +162,11 @@ export function AppShell({
                     }`}
                   >
                     {item.label}
+                    {notificationCount > 0 ? (
+                      <span className="ml-1 inline-flex min-w-5 items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                        {notificationCount > 99 ? '99+' : notificationCount}
+                      </span>
+                    ) : null}
                   </Link>
                 );
               })}

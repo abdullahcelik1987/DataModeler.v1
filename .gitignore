@@ -28,6 +28,8 @@ backend/.vscode/
 
 # Database
 database/*.sql~
+backups/*.dump
+backups/*.json
 
 # Docker
 .dockerignore
