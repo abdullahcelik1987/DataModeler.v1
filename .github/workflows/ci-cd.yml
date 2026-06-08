@@ -242,11 +242,12 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       security-events: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
+  
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
@@ -254,13 +255,12 @@ jobs:
           scan-ref: "."
           format: "sarif"
           output: "trivy-results.sarif"
-
+  
       - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always() && hashFiles('trivy-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: "trivy-results.sarif"
-
   # =====================================================================
   # Deploy to Production (Main branch only)
   # =====================================================================
