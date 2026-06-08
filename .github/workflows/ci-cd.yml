@@ -259,12 +259,31 @@ jobs:
           scan-ref: "."
           format: "sarif"
           output: "trivy-results.sarif"
+
+      - name: Check code scanning availability
+        id: code-scanning
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.request("GET /repos/{owner}/{repo}/code-scanning/alerts", {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 1
+              });
+              core.setOutput("enabled", "true");
+            } catch (error) {
+              core.setOutput("enabled", "false");
+              core.info(`Code scanning API unavailable (${error.status ?? "unknown"}); skipping SARIF upload.`);
+            }
   
       - name: Upload Trivy results to GitHub Security tab
-        if: ${{ always() && hashFiles('trivy-results.sarif') != '' }}
+        if: ${{ always() && hashFiles('trivy-results.sarif') != '' && steps.code-scanning.outputs.enabled == 'true' }}
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: "trivy-results.sarif"
+          ref: ${{ github.ref }}
+          sha: ${{ github.sha }}
         
   # =====================================================================
   # Deploy to Production (Main branch only)
