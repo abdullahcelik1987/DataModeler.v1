@@ -176,10 +176,10 @@ jobs:
           dotnet-version: "8.0.x"
 
       - name: Restore dependencies
-        run: dotnet restore backend/DataModeler.csproj
+        run: dotnet restore backend/DataModeler.API.csproj
 
       - name: Build
-        run: dotnet build backend/DataModeler.csproj -c Release --no-restore
+        run: dotnet build backend/DataModeler.API.csproj -c Release --no-restore
 
       - name: Run tests
         run: dotnet test backend/ -c Release --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx"
