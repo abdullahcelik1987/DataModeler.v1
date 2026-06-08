@@ -301,7 +301,7 @@ jobs:
     if: always()
     steps:
       - name: Send Slack notification
-        if: always()
+        if: always() && secrets.SLACK_WEBHOOK != ''
         uses: 8398a7/action-slack@v3
         with:
           status: ${{ job.status }}
@@ -311,4 +311,3 @@ jobs:
             Branch: ${{ github.ref }}
             Commit: ${{ github.sha }}
           webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-        if: secrets.SLACK_WEBHOOK != ''
