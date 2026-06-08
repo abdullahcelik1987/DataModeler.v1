@@ -280,8 +280,11 @@ jobs:
           echo "🐳 Frontend image: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}"
 
       - name: Trigger deployment webhook
+        if: env.DEPLOYMENT_WEBHOOK_URL != ''
+        env:
+          DEPLOYMENT_WEBHOOK_URL: ${{ secrets.DEPLOYMENT_WEBHOOK_URL }}
         run: |
-          curl -X POST ${{ secrets.DEPLOYMENT_WEBHOOK_URL }} \
+          curl -X POST "$DEPLOYMENT_WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -d '{
               "repository": "${{ github.repository }}",
@@ -290,7 +293,6 @@ jobs:
               "backend_image": "${{ env.REGISTRY }}/${{ env.BACKEND_IMAGE }}:${{ github.sha }}",
               "frontend_image": "${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${{ github.sha }}"
             }'
-        if: secrets.DEPLOYMENT_WEBHOOK_URL != ''
 
   # =====================================================================
   # Notify
@@ -301,7 +303,9 @@ jobs:
     if: always()
     steps:
       - name: Send Slack notification
-        if: always() && secrets.SLACK_WEBHOOK != ''
+        if: always() && env.SLACK_WEBHOOK != ''
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
         uses: 8398a7/action-slack@v3
         with:
           status: ${{ job.status }}
@@ -310,4 +314,4 @@ jobs:
             Repository: ${{ github.repository }}
             Branch: ${{ github.ref }}
             Commit: ${{ github.sha }}
-          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          webhook_url: ${{ env.SLACK_WEBHOOK }}
