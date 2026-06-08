@@ -278,7 +278,8 @@ jobs:
             }
   
       - name: Upload Trivy results to GitHub Security tab
-        if: ${{ always() && hashFiles('trivy-results.sarif') != '' && steps.code-scanning.outputs.enabled == 'true' }}
+  #      if: ${{ always() && hashFiles('trivy-results.sarif') != '' && steps.code-scanning.outputs.enabled == 'true' }}
+        if: ${{ github.event_name == 'push' && hashFiles('trivy-results.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: "trivy-results.sarif"
