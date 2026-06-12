@@ -26,6 +26,32 @@ public class LdapAuthService : ILdapAuthService
         _dbContext = dbContext;
     }
 
+    private static bool ShouldTrustAllServerCertificatesForLdap()
+    {
+        var overrideValue = Environment.GetEnvironmentVariable("LDAP_TRUST_ALL_CERTS");
+        if (!string.IsNullOrWhiteSpace(overrideValue))
+        {
+            return overrideValue.Equals("true", StringComparison.OrdinalIgnoreCase)
+                || overrideValue.Equals("1", StringComparison.OrdinalIgnoreCase)
+                || overrideValue.Equals("yes", StringComparison.OrdinalIgnoreCase);
+        }
+
+        var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+        return string.Equals(environment, "Development", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static LdapConnection CreateConnection(LdapConfig config)
+    {
+        var connection = new LdapConnection { SecureSocketLayer = config.UseSSL };
+
+        if (config.UseSSL && ShouldTrustAllServerCertificatesForLdap())
+        {
+            connection.UserDefinedServerCertValidationDelegate += (_, _, _, _) => true;
+        }
+
+        return connection;
+    }
+
     public async Task<LdapUser?> AuthenticateAsync(string username, string password)
     {
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
@@ -54,7 +80,7 @@ public class LdapAuthService : ILdapAuthService
         {
             try
             {
-                using var conn = new LdapConnection { SecureSocketLayer = config.UseSSL };
+                using var conn = CreateConnection(config);
                 conn.Connect(config.Server, config.Port);
 
                 var bound = false;
@@ -159,7 +185,7 @@ public class LdapAuthService : ILdapAuthService
     {
         try
         {
-            using var adminConnection = new LdapConnection { SecureSocketLayer = config.UseSSL };
+            using var adminConnection = CreateConnection(config);
             adminConnection.Connect(config.Server, config.Port);
 
             if (!string.IsNullOrWhiteSpace(config.AdminUsername) && !string.IsNullOrWhiteSpace(config.AdminPassword))
@@ -211,7 +237,7 @@ public class LdapAuthService : ILdapAuthService
             var entry = search.Next();
             var distinguishedName = entry.Dn;
 
-            using var userConnection = new LdapConnection { SecureSocketLayer = config.UseSSL };
+            using var userConnection = CreateConnection(config);
             userConnection.Connect(config.Server, config.Port);
             userConnection.Bind(distinguishedName, password);
 
@@ -251,7 +277,7 @@ public class LdapAuthService : ILdapAuthService
 
         try
         {
-            using var conn = new LdapConnection { SecureSocketLayer = config.UseSSL };
+            using var conn = CreateConnection(config);
             conn.Connect(config.Server, config.Port);
 
             if (!string.IsNullOrWhiteSpace(config.AdminUsername) && !string.IsNullOrWhiteSpace(config.AdminPassword))

@@ -63,7 +63,7 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
-      ALLOW_DESTRUCTIVE_DB_REPAIR: ${ALLOW_DESTRUCTIVE_DB_REPAIR:-false}
+      ALLOW_DESTRUCTIVE_DB_REPAIR: "true"
       ConnectionStrings__DefaultConnection: >
         Server=postgres;
         Port=5432;
@@ -78,6 +78,7 @@ services:
       JWT__Secret: DevSecretKeyForDevelopmentOnlyChangeInProduction
       JWT__Issuer: DataModeler
       JWT__Audience: DataModelerApp
+      LDAP_TRUST_ALL_CERTS: "true"
       Logging__LogLevel__Default: Debug
       Logging__LogLevel__Microsoft: Information
       CORS__AllowedOrigins: http://localhost:3000,http://frontend:3000
@@ -89,7 +90,6 @@ services:
       - backend_cache:/app/.dotnet
     networks:
       - datamodeler-network
-      - sambaad_default
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
@@ -157,22 +157,12 @@ services:
 
 volumes:
   postgres_data_dev:
-    name: datamodelerv1_postgres_data_dev
-    external: true
   redis_data_dev:
-    name: datamodelerv1_redis_data_dev
-    external: true
   pgadmin_data_dev:
-    name: datamodelerv1_pgadmin_data_dev
-    external: true
   backend_cache:
-    name: datamodelerv1_backend_cache
-    external: true
   frontend_node_modules:
   frontend_next:
 
 networks:
   datamodeler-network:
     driver: bridge
-  sambaad_default:
-    external: true

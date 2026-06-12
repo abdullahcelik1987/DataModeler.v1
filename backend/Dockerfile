@@ -3,7 +3,7 @@ ARG VCS_REF=unknown
 ARG VERSION=1.0.0
 
 # Build stage
-FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS builder
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS builder
 
 WORKDIR /src
 
@@ -16,24 +16,21 @@ ARG VERSION=1.0.0
 COPY ["backend/DataModeler.API.csproj", "backend/"]
 COPY ["backend/", "backend/"]
 
-# Restore dependencies with optimizations for Alpine/musl
+# Restore dependencies
 RUN dotnet restore "backend/DataModeler.API.csproj" \
-    -r linux-musl-x64 \
-    && dotnet build "backend/DataModeler.API.csproj" -c Release -o /app/build \
-    --no-restore -r linux-musl-x64
+    && dotnet build "backend/DataModeler.API.csproj" -c Release -o /app/build --no-restore
 
 # Publish
 RUN dotnet publish "backend/DataModeler.API.csproj" \
     -c Release \
     -o /app/publish \
-    -r linux-musl-x64 \
     -p:PublishReadyToRun=false \
     -p:PublishSingleFile=false \
     -p:PublishTrimmed=false \
     -p:DebugType=embedded
 
 # Runtime stage
-FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 
 # Re-declare build args for this stage (required for LABEL expansion)
 ARG BUILD_DATE=unknown
@@ -41,14 +38,13 @@ ARG VCS_REF=unknown
 ARG VERSION=1.0.0
 
 # Install additional dependencies for production
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
-    icu-libs \
-    tini
+    && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for security
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
 WORKDIR /app
 
@@ -74,9 +70,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # Change to non-root user
 USER appuser
-
-# Use tini to handle signals properly
-ENTRYPOINT ["/sbin/tini", "--"]
 
 # Run the application
 CMD ["dotnet", "DataModeler.API.dll"]

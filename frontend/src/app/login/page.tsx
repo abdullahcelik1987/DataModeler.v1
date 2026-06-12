@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/src/hooks/useAuth';
 import Link from 'next/link';
+import { motion } from 'framer-motion';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -44,30 +45,35 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="dm-page flex items-center justify-center">
-      <div className="dm-shell grid max-w-5xl gap-5 lg:grid-cols-2 lg:items-stretch">
-        <aside className="dm-surface hidden p-8 lg:block">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-blue-700">Secure Access</p>
-          <h1 className="mt-3 text-4xl font-extrabold tracking-tight text-slate-900">DataModeler</h1>
-          <p className="mt-4 text-sm leading-6 text-slate-600">
-            Sign in with your configured identity provider and continue working on governed DBML models.
+    <div className="min-h-screen bg-bg-base px-4 py-8 md:px-8 md:py-12">
+      <div className="mx-auto max-w-6xl grid gap-6 lg:grid-cols-2 lg:items-stretch">
+        <aside className="hidden lg:block rounded-3xl border border-black/10 bg-white/55 backdrop-blur-xl p-10 shadow-[0_20px_80px_-45px_rgba(0,0,0,0.35)]">
+          <p className="text-[11px] uppercase tracking-[0.24em] text-[#5f5f5f]">Secure Access</p>
+          <h1 className="mt-3 text-5xl font-display tracking-tight text-[#1a1a1a]">mėntality</h1>
+          <p className="mt-4 text-sm leading-6 text-[#646464]">
+            Sign in with your configured provider and continue in your governed data workspace.
           </p>
 
           <div className="mt-8 space-y-3">
-            <div className="dm-panel p-4">
-              <p className="text-sm font-semibold text-slate-900">Unified Modeling Surface</p>
-              <p className="mt-1 text-xs text-slate-600">Edit text and diagrams with synchronized structure.</p>
+            <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
+              <p className="text-sm font-semibold text-[#1a1a1a]">Realtime Workspace</p>
+              <p className="mt-1 text-xs text-[#5f5f5f]">DBML and diagram collaboration in one surface.</p>
             </div>
-            <div className="dm-panel p-4">
-              <p className="text-sm font-semibold text-slate-900">Enterprise Governance</p>
-              <p className="mt-1 text-xs text-slate-600">Access control and audit-ready operational flows.</p>
+            <div className="rounded-2xl border border-black/10 bg-white/70 p-4">
+              <p className="text-sm font-semibold text-[#1a1a1a]">Enterprise Governance</p>
+              <p className="mt-1 text-xs text-[#5f5f5f]">Roles, approvals and operational auditing.</p>
             </div>
           </div>
         </aside>
 
-        <section className="dm-surface w-full max-w-xl p-8">
-        <h1 className="text-3xl font-bold text-center mb-2 text-slate-900">Welcome Back</h1>
-        <p className="text-center text-slate-600 mb-8">Sign in to continue to your data workspace</p>
+        <motion.section
+          initial={{ opacity: 0, y: 15 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="rounded-3xl border border-black/10 bg-white/75 backdrop-blur-xl w-full max-w-xl p-8 md:p-10 shadow-[0_20px_80px_-45px_rgba(0,0,0,0.35)]"
+        >
+        <h1 className="text-4xl font-display text-center mb-2 text-[#1a1a1a]">Welcome Back</h1>
+        <p className="text-center text-[#6b6b6b] mb-8">Sign in to continue to your data workspace</p>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Provider Selection */}
@@ -79,7 +85,7 @@ export default function LoginPage() {
               <select
                 value={selectedProvider}
                 onChange={(e) => setSelectedProvider(e.target.value as 'local' | 'ldap' | 'azure_ad')}
-                className="dm-select"
+                className="h-11 w-full rounded-xl border border-black/10 bg-white px-3 text-sm text-[#1a1a1a] focus:outline-none focus:ring-2 focus:ring-[#9fff00]/60"
               >
                 {providers.map((provider) => (
                   <option key={provider.type} value={provider.type}>
@@ -101,7 +107,7 @@ export default function LoginPage() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               disabled={isLoading}
-              className="dm-input disabled:cursor-not-allowed disabled:bg-slate-100"
+              className="h-11 w-full rounded-xl border border-black/10 bg-white px-3 text-sm text-[#1a1a1a] placeholder:text-[#9a9a9a] focus:outline-none focus:ring-2 focus:ring-[#9fff00]/60 disabled:cursor-not-allowed disabled:bg-slate-100"
               placeholder="user@example.com"
               required
             />
@@ -118,7 +124,7 @@ export default function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               disabled={isLoading}
-              className="dm-input disabled:cursor-not-allowed disabled:bg-slate-100"
+              className="h-11 w-full rounded-xl border border-black/10 bg-white px-3 text-sm text-[#1a1a1a] placeholder:text-[#9a9a9a] focus:outline-none focus:ring-2 focus:ring-[#9fff00]/60 disabled:cursor-not-allowed disabled:bg-slate-100"
               placeholder="••••••••"
               required
             />
@@ -135,26 +141,26 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={isLoading}
-            className="dm-btn-primary w-full"
+            className="w-full inline-flex h-11 items-center justify-center rounded-full bg-black text-white text-sm font-semibold transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isLoading ? 'Logging in...' : 'Login'}
           </button>
         </form>
 
         {/* Info Text */}
-        <div className="mt-8 rounded-xl border border-blue-200 bg-blue-50 p-4">
-          <p className="text-sm text-blue-700 font-semibold mb-2">Demo Credentials:</p>
-          <p className="text-sm text-blue-600">Email: admin@datamodeler.local</p>
-          <p className="text-sm text-blue-600">Password: ktdm123456</p>
+        <div className="mt-8 rounded-xl border border-black/10 bg-white p-4">
+          <p className="text-sm text-[#1a1a1a] font-semibold mb-2">Demo Credentials:</p>
+          <p className="text-sm text-[#5f5f5f]">Email: admin@datamodeler.local</p>
+          <p className="text-sm text-[#5f5f5f]">Password: ktdm123456</p>
         </div>
 
         {/* Back Link */}
         <div className="mt-6 text-center">
-          <Link href="/" className="text-blue-700 hover:text-blue-800 font-medium">
+          <Link href="/" className="text-[#1a1a1a] hover:text-black font-medium">
             ← Back to Home
           </Link>
         </div>
-        </section>
+        </motion.section>
       </div>
     </div>
   );
